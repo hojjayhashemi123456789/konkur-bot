@@ -8,6 +8,8 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
 from telebot import types, apihelper
 
@@ -189,14 +191,23 @@ MAJOR_ALIASES = {
     'علوم دامی': ['علوم دامی', 'دامپروری']
 }
 
+
+def is_commitment_row(row):
+    d = str(row.get('دوره', '')).strip()
+    u = str(row.get('دانشگاه قبولی', '')).strip()
+    return ('تعهد' in d or 'محروم' in d or 'عدالت' in d or 
+            'مناطق محروم' in u or 'تعهد' in u or 'بومی' in d)
+
 def match_major_in_name(major_target, r_name):
     target_clean = major_target.replace('ي', 'ی').replace('ك', 'ک').replace('‌', ' ')
     name_clean = str(r_name).replace('ي', 'ی').replace('ك', 'ک').replace('‌', ' ')
     
     if target_clean == 'پزشکی':
-        if any(x in name_clean for x in ['دندان', 'دام', 'هسته']):
+        if any(x in name_clean for x in ['دندان', 'دام', 'هسته', 'فوریت', 'کتابدار', 'گیاه']):
             return False
         return 'پزشکی' in name_clean
+    elif target_clean in ['فوریتهای پزشکی', 'فوریت های پزشکی', 'فوریت های پزشکی پیش بیمارستانی']:
+        return any(x in name_clean for x in ['فوریت', 'فوریتهای پزشکی'])
     elif target_clean == 'دندانپزشکی':
         return any(x in name_clean for x in ['دندانپزشکی', 'دندان پزشکی', 'دندان'])
     elif target_clean == 'دامپزشکی':
@@ -237,8 +248,8 @@ def detect_doreh_and_multiplier(row):
         return 'غیرانتفاعی / پیام‌نور', 0.70
     elif any(k in combined for k in ['نوبت دوم', 'شبانه']):
         return 'نوبت دوم (شبانه)', 0.95
-    elif any(k in combined for k in ['تعهدی', 'مناطق محروم', 'محروم']):
-        return 'تعهدی / مناطق محروم', 0.90
+    elif any(k in combined for k in ['تعهدی', 'مناطق محروم', 'محروم', 'عدالت']):
+        return 'تعهدی (بومی استان)', 0.90
     else:
         return 'روزانه (دولتی رایگان)', 1.00
 
@@ -255,7 +266,7 @@ def parse_items_with_optional_scores(text, alias_dict):
         sub = token.strip()
         if not sub:
             continue
-        num_match = re.search(r'(10(?:\.0+)?|[1-9](?:\.\d+)?)', sub)
+        num_match = re.search(r'[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*$', sub)
         score_val = None
         if num_match:
             try:
@@ -269,7 +280,7 @@ def parse_items_with_optional_scores(text, alias_dict):
         matched_item = None
         for canon, aliases in alias_dict.items():
             if any(a in sub_name for a in aliases):
-                if canon == 'پزشکی' and any(x in sub_name for x in ['دندان', 'دام', 'هسته']):
+                if canon == 'پزشکی' and any(x in sub_name for x in ['دندان', 'دام', 'هسته', 'فوریت', 'کتابدار', 'گیاه']):
                     continue
                 matched_item = canon
                 break
@@ -287,7 +298,7 @@ def parse_items_with_optional_scores(text, alias_dict):
                     if canon == 'پزشکی':
                         prefix = t[max(0, idx-10):idx]
                         suffix = t[idx:idx+15]
-                        if any(x in prefix for x in ['دندان', 'دام']) or any(x in suffix for x in ['هسته']):
+                        if any(x in prefix for x in ['دندان', 'دام', 'فوریت']) or any(x in suffix for x in ['هسته', 'پیش بیمارستانی', 'فوریت']):
                             continue
                     if canon not in items:
                         items.append(canon)
@@ -357,6 +368,42 @@ def build_majors_keyboard(selected_list):
     )
     return markup
 
+
+def build_native_province_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    markup.add(types.InlineKeyboardButton("🚫 بدون کدرشته‌های تعهدی (فقط عادی و پردیس/آزاد)", callback_data="natprov_none"))
+    
+    buttons = []
+    for idx, name in enumerate(PROVINCES_32):
+        buttons.append(types.InlineKeyboardButton(name, callback_data=f"natprov_{idx}"))
+    
+    for i in range(0, len(buttons), 3):
+        markup.row(*buttons[i:i+3])
+    return markup
+
+def send_native_province_prompt(chat_id, message_id=None):
+    msg_text = (
+        "🏥 **مرحله انتخاب وضعیت تعهد خدمت (استان بومی):**\n\n"
+        "▫️ کدرشته‌های **تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی)** در پزشکی، دندانپزشکی، داروسازی و پیراپزشکی، **صرفاً مختص داوطلبان بومی همان استان** است.\n"
+        "▫️ برای اینکه کدرشته‌های تعهدی دقیقاً متناسب با بومی‌گزینی شما پیشنهاد شوند، لطفاً **استان بومی** خود را انتخاب فرمایید:\n"
+        "▫️ (یا در صورت عدم تمایل به دوره‌های تعهدی، گزینه «بدون کدرشته‌های تعهدی» را بزنید).\n\n"
+        "💡 *همچنین می‌توانید نام استان بومی خود را در چت تایپ فرمایید.*"
+    )
+    keyboard = build_native_province_keyboard()
+    if message_id:
+        try:
+            bot.edit_message_text(msg_text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=keyboard)
+            return
+        except Exception as e:
+            if 'message is not modified' in str(e).lower():
+                return
+            try:
+                bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=keyboard)
+                return
+            except Exception:
+                pass
+    bot.send_message(chat_id, msg_text, parse_mode='Markdown', reply_markup=keyboard)
+
 def build_provinces_keyboard(selected_list):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(types.InlineKeyboardButton("🌐 سراسر کشور (تمام استان‌ها)", callback_data="prov_all"))
@@ -394,7 +441,8 @@ def send_welcome(message):
         'selected_majors': [],
         'major_scores': {},
         'selected_provinces': [],
-        'prov_scores': {}
+        'prov_scores': {},
+        'native_province': None
     }
     
     welcome_text = (
@@ -480,6 +528,26 @@ def send_majors_selection_prompt(chat_id, message_id=None):
             except Exception:
                 pass
     bot.send_message(chat_id, msg_text, parse_mode='Markdown', reply_markup=keyboard)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('natprov_'))
+def callback_native_province(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_state:
+        user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
+        
+    data = call.data[8:]
+    if data == 'none':
+        user_state[chat_id]['native_province'] = 'بدون تعهدی'
+        bot.answer_callback_query(call.id, "بدون کدرشته‌های تعهدی")
+    else:
+        idx = int(data)
+        prov_name = PROVINCES_32[idx]
+        user_state[chat_id]['native_province'] = prov_name
+        bot.answer_callback_query(call.id, f"استان بومی: {prov_name}")
+        
+    user_state[chat_id]['step'] = 'select_provinces'
+    send_provinces_selection_prompt(chat_id, message_id=call.message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('maj_'))
 def callback_major_action(call):
@@ -587,7 +655,7 @@ def callback_province_action(call):
         user_state[chat_id]['selected_provinces'] = []
         user_state[chat_id]['prov_scores'] = {}
         bot.answer_callback_query(call.id, "استان‌ها پاک شدند.")
-        send_provinces_selection_prompt(chat_id, message_id=call.message.message_id)
+        send_native_province_prompt(chat_id, message_id=call.message.message_id)
         return
     elif action == 'confirm':
         if not selected:
@@ -606,7 +674,7 @@ def callback_province_action(call):
             bot.answer_callback_query(call.id, f"اولویت {len(selected)}: {prov_name}")
         user_state[chat_id]['selected_provinces'] = selected
         user_state[chat_id]['prov_scores'] = {}
-        send_provinces_selection_prompt(chat_id, message_id=call.message.message_id)
+        send_native_province_prompt(chat_id, message_id=call.message.message_id)
 # General Text Handler (Rank input or Typed Majors/Provinces with optional scores)
 @bot.message_handler(func=lambda msg: True)
 def text_input_handler(message):
@@ -649,13 +717,40 @@ def text_input_handler(message):
             user_state[chat_id]['major_scores'] = manual_m_sc
             m_str = "، ".join(parsed_m)
             bot.send_message(chat_id, f"✅ **{to_persian_num(len(parsed_m))} رشته بر اساس اولویت ارسالی شما ثبت شد:**\n{m_str}")
-            proceed_to_provinces_step(chat_id)
+            user_state[chat_id]['step'] = 'select_native_prov'
+            send_native_province_prompt(chat_id)
             return
         else:
             bot.send_message(chat_id, "⚠️ رشته‌ای از متن شما شناسایی نشد. لطفاً از دکمه‌های زیر انتخاب فرمایید:")
             send_majors_selection_prompt(chat_id)
             return
             
+    if step == 'select_native_prov':
+        t_clean = text.replace('ي', 'ی').replace('ك', 'ک').strip()
+        if any(x in t_clean for x in ['بدون', 'خیر', 'نه', 'هیچ']):
+            user_state[chat_id]['native_province'] = 'بدون تعهدی'
+            bot.send_message(chat_id, "✅ وضعیت کدرشته‌های تعهدی: **غیرفعال** ثبت شد.")
+        else:
+            found_p = None
+            for p in PROVINCES_32:
+                if p in t_clean:
+                    found_p = p
+                    break
+            if not found_p:
+                for p, kws in PROVINCE_KEYWORDS.items():
+                    if any(kw in t_clean for kw in kws):
+                        found_p = p
+                        break
+            user_state[chat_id]['native_province'] = found_p if found_p else 'بدون تعهدی'
+            if found_p:
+                bot.send_message(chat_id, f"✅ استان بومی شما: **{found_p}** ثبت شد.\n(کدرشته‌های تعهد خدمت منحصراً برای این استان فعال شدند)")
+            else:
+                bot.send_message(chat_id, "✅ کدرشته‌های تعهدی برای شما لحاظ نشد.")
+                
+        user_state[chat_id]['step'] = 'select_provinces'
+        send_provinces_selection_prompt(chat_id)
+        return
+
     if step == 'select_provinces':
         parsed_p, manual_p_sc = parse_items_with_optional_scores(text, PROVINCE_KEYWORDS)
         if parsed_p:
@@ -712,6 +807,18 @@ def execute_search_and_send(chat_id):
     if selected_provinces and 'سراسر کشور' not in selected_provinces and 'همه' not in selected_provinces:
         filtered = filtered[filtered['استان'].isin(selected_provinces)]
         
+    # 2.5. فیلتر کدرشته‌های تعهد خدمت (بومی‌گزینی اختصاصی)
+    native_prov = state.get('native_province', None)
+    def filter_commitment_seats(row):
+        is_comm = is_commitment_row(row)
+        if not is_comm:
+            return True
+        if not native_prov or native_prov == 'بدون تعهدی':
+            return False
+        return row.get('استان', '') == native_prov
+        
+    filtered = filtered[filtered.apply(filter_commitment_seats, axis=1)]
+    
     if filtered.empty:
         restart_markup = types.InlineKeyboardMarkup()
         restart_markup.add(types.InlineKeyboardButton("🔄 استعلام مجدد", callback_data="restart"))
@@ -779,6 +886,7 @@ def execute_search_and_send(chat_id):
         f"🗺 **استان‌ها:** {provs_disp}\n"
         f"📌 **تعداد کل گزینه‌های یافت‌شده:** {total_count:,} رشته‌محل\n"
         f"⚖️ **فرمول رتبه‌بندی:** `(نمره رشته × ۱.۲ + نمره شهر × ۱.۰) × ضریب دوره`\n"
+        f"🏥 **وضعیت تعهد خدمت:** {'بومی ' + native_prov if (native_prov and native_prov != 'بدون تعهدی') else 'بدون کدرشته‌های تعهدی'}\n" 
         f"{'='*32}\n\n"
     )
     
@@ -851,6 +959,8 @@ def execute_search_and_send(chat_id):
     ]
     ws.append(headers)
     ws.row_dimensions[1].height = 28
+    
+    tahad_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
     for col_idx in range(1, len(headers) + 1):
         c = ws.cell(row=1, column=col_idx)
         c.font = h_font
@@ -884,7 +994,8 @@ def execute_search_and_send(chat_id):
         ]
         ws.append(row_data)
         ws.row_dimensions[r_idx].height = 22
-        fill = alt_fill if r_idx % 2 == 1 else None
+        is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
+        fill = tahad_fill if is_row_tahad else (alt_fill if r_idx % 2 == 1 else None)
         
         for col_idx, val in enumerate(row_data, 1):
             cell = ws.cell(row=r_idx, column=col_idx)
@@ -903,14 +1014,116 @@ def execute_search_and_send(chat_id):
             else:
                 cell.alignment = al_right
 
+    if native_prov and native_prov != 'بدون تعهدی':
+        ws.append([])
+        b_idx = ws.max_row + 1
+        ws.merge_cells(start_row=b_idx, start_column=1, end_row=b_idx, end_column=len(headers))
+        b_cell = ws.cell(row=b_idx, column=1)
+        b_cell.value = (
+            f"💡 یادآوری مهم مشاور درباره کدرشته‌های تعهد خدمت استان {native_prov}: "
+            f"کدرشته‌های تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی) منحصراً متعلق به داوطلبان بومی استان {native_prov} است. "
+            f"با توجه به متغیر بودن ظرفیت‌ها در هر سال، حتماً کدرشته‌های تعهدی دانشگاه‌های علوم پزشکی استان خود را در دفترچه انتخاب رشته امسال بررسی و در لیست نهایی درج فرمایید."
+        )
+        b_cell.font = Font(name=font_name, size=11, bold=True, color='9C6500')
+        b_cell.fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
+        b_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        b_cell.border = t_border
+        ws.row_dimensions[b_idx].height = 42
+
     for col in ws.columns:
         max_l = max(len(str(cell.value or '')) for cell in col)
         col_letter = get_column_letter(col[0].column)
         ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
         
+
+    # -------------------------------------------------------------
+    # 📑 شیت دوم اختصاصی: چک‌لیست رشته‌های تعهد خدمت بومی (دفترچه امسال)
+    # -------------------------------------------------------------
+    if native_prov and native_prov != 'بدون تعهدی':
+        ws2 = wb.create_sheet(title="چک‌لیست تعهد خدمت بومی")
+        ws2.views.sheetView[0].rightToLeft = True
+        
+        headers2 = [
+            'ردیف', 'رشته تحصیلی انتخابی', 'استان بومی تعهدی', 
+            'وضعیت در سوابق سال‌های گذشته', 'دستورالعمل و اقدام الزامی مشاور برای دفترچه کنکور امسال'
+        ]
+        ws2.append(headers2)
+        ws2.row_dimensions[1].height = 28
+        for c_idx in range(1, len(headers2) + 1):
+            c = ws2.cell(row=1, column=c_idx)
+            c.font = h_font
+            c.fill = h_fill
+            c.alignment = al_center
+            c.border = t_border
+
+        check_majors = selected_majors if ('همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else TARGET_MAJORS[:15]
+        
+        # Majors that had commitment rows in the filtered table
+        existing_tahad_majors = set()
+        for _, r in filtered.iterrows():
+            if 'تعهدی' in str(r.get('دوره_تطبیقی', '')):
+                for m in check_majors:
+                    if match_major_in_name(m, r.get('رشته قبولی', '')):
+                        existing_tahad_majors.add(m)
+
+        for idx, m in enumerate(check_majors, 1):
+            has_t = m in existing_tahad_majors
+            status_text = "✅ موجود در سوابق رتبه‌های قبولی (در شیت ۱ درج شد)" if has_t else "⚠️ در سوابق این بازه رتبه ثبت نشده است"
+            instr_text = (
+                f"کدرشته‌های تعهدی {m} در علوم پزشکی {native_prov} از دفترچه امسال تطبیق و اولویت‌بندی شود."
+                if has_t else
+                f"⚠️ بررسی الزامی در دفترچه کنکور امسال: مشاور حتماً بررسی کند اگر برای {m} در دانشگاه‌های علوم پزشکی استان {native_prov} ظرفیت تعهد خدمت اعلام شده، فوراً به برگه انتخاب رشته افزوده شود (ظرفیت سالانه متغیر است)."
+            )
+            row_vals = [idx, m, native_prov, status_text, instr_text]
+            ws2.append(row_vals)
+            r_idx = ws2.max_row
+            ws2.row_dimensions[r_idx].height = 25
+            
+            fill2 = PatternFill(start_color='FEF9E7', end_color='FEF9E7', fill_type='solid') if not has_t else PatternFill(start_color='E8F8F5', end_color='E8F8F5', fill_type='solid')
+            for c_idx, val in enumerate(row_vals, 1):
+                cell = ws2.cell(row=r_idx, column=c_idx)
+                cell.font = d_font
+                cell.border = t_border
+                cell.fill = fill2
+                if c_idx in [1, 3]:
+                    cell.alignment = al_center
+                else:
+                    cell.alignment = al_right
+
+        for col in ws2.columns:
+            max_l = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws2.column_dimensions[col_letter].width = max(max_l + 3, 14)
+
     wb.save(excel_buffer)
     excel_buffer.seek(0)
     
+    # Send Telegram Commitment Checklist if native province is chosen
+    if native_prov and native_prov != 'بدون تعهدی':
+        check_majors_tg = selected_majors if ('همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else TARGET_MAJORS[:10]
+        
+        existing_tahad_majors_tg = set()
+        for _, r in filtered.iterrows():
+            if 'تعهدی' in str(r.get('دوره_تطبیقی', '')):
+                for m in check_majors_tg:
+                    if match_major_in_name(m, r.get('رشته قبولی', '')):
+                        existing_tahad_majors_tg.add(m)
+                        
+        checklist_lines = []
+        for m in check_majors_tg:
+            if m in existing_tahad_majors_tg:
+                checklist_lines.append(f"▫️ ✅ **{m}:** دارای قبولی تعهدی در سوابق (در جدول اکسل درج شد).")
+            else:
+                checklist_lines.append(f"▫️ ⚠️ **{m}:** در سوابق این رتبه نبود؛ *حتماً دفترچه امسال بررسی شود و در صورت داشتن تعهدی، به فرم انتخاب رشته اضافه گردد.*")
+                
+        checklist_text = (
+            f"🏥 **چک‌لیست کدرشته‌های تعهد خدمت ۱.۵ برابر (بومی استان {native_prov}):**\n"
+            f"با توجه به اینکه کدرشته‌های تعهد خدمت صرفاً به داوطلبان بومی استان **{native_prov}** تعلق دارد و ظرفیت‌های آن هر سال در دفترچه تغییر می‌کند:\n\n"
+            + "\n".join(checklist_lines) +
+            f"\n\n💡 *یک شیت مستقل به نام «چک‌لیست تعهد خدمت بومی» نیز در فایل اکسل زیر ضمیمه شده است.*"
+        )
+        bot.send_message(chat_id, checklist_text, parse_mode='Markdown')
+
     file_title = f"اولویت_بندی_انتخاب_رشته_رتبه_{rank}_منطقه_{region}.xlsx"
     restart_markup = types.InlineKeyboardMarkup()
     restart_markup.add(types.InlineKeyboardButton("🔄 استعلام جدید", callback_data="restart"))
@@ -932,7 +1145,8 @@ def callback_restart(call):
         'selected_majors': [],
         'major_scores': {},
         'selected_provinces': [],
-        'prov_scores': {}
+        'prov_scores': {},
+        'native_province': None
     }
     bot.answer_callback_query(call.id, "شروع مجدد")
     bot.send_message(
@@ -943,7 +1157,37 @@ def callback_restart(call):
         reply_markup=get_region_keyboard()
     )
 
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        html = """<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head><meta charset="utf-8"><title>وضعیت ربات کنکور</title></head>
+<body style="font-family: Tahoma, sans-serif; text-align: center; padding-top: 50px; background-color: #f8f9fa;">
+    <h1 style="color: #27ae60;">✅ ربات انتخاب رشته کنکور تجربی فعال است</h1>
+    <p style="color: #555;">سرویس تلگرام @Drhashemi1381Bot به صورت ۲۴ ساعته در حال کار است.</p>
+</body>
+</html>"""
+        self.wfile.write(html.encode('utf-8'))
+        
+    def log_message(self, format, *args):
+        return
+
+def start_health_server():
+    port = int(os.environ.get('PORT', 7860))
+    try:
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        print(f"🌐 وب‌سرور پشتیبان روی پورت {port} فعال شد (سازگار با Hugging Face و Render).")
+        server.serve_forever()
+    except Exception as e:
+        pass
+
 if __name__ == '__main__':
+    t_health = threading.Thread(target=start_health_server, daemon=True)
+    t_health.start()
     print("🚀 ربات با موفقیت و بر اساس سیستم نمره‌دهی خطی و فرمول اولویت آماده اجرا شد!")
     try:
         bot.infinity_polling(timeout=20, long_polling_timeout=10)
@@ -952,3 +1196,5 @@ if __name__ == '__main__':
         print("💡 راهنمای رفع مشکل:")
         print("۱. اگر در ایران هستید، تلگرام فیلتر است؛ لطفاً فیلترشکن (VPN) خود را روشن کنید.")
         print("۲. توصیه می‌شود در برنامه فیلترشکن خود حالت 'TUN Mode' را فعال کنید.")
+
+        
