@@ -1177,7 +1177,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         return
 
 def start_health_server():
-    port = int(os.environ.get('PORT', 7860))
+    port = int(os.environ.get('PORT', 10000))
     try:
         server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
         print(f"🌐 وب‌سرور پشتیبان روی پورت {port} فعال شد (سازگار با Hugging Face و Render).")
