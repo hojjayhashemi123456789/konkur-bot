@@ -578,7 +578,8 @@ def get_percentage_presets_keyboard():
         types.InlineKeyboardButton("🎯 دقیق و نزدیک (۱۰٪ خوش‌بینانه / ۱۰٪ بدبینانه)", callback_data="pct_p_10_10"),
         types.InlineKeyboardButton("🚀 بازه گسترده و حداکثری (۳۰٪ خوش‌بینانه / ۳۰٪ بدبینانه)", callback_data="pct_p_30_30"),
         types.InlineKeyboardButton("🛡️ حاشیه امن بالا (۱۰٪ خوش‌بینانه / ۳۰٪ بدبینانه)", callback_data="pct_p_10_30"),
-        types.InlineKeyboardButton("⚙️ تنظیم دستی یا جداگانه درصدها (۵٪، ۱۰٪، ۲۵٪، ۳۰٪...)", callback_data="pct_custom_menu")
+        types.InlineKeyboardButton("⚙️ تنظیم دستی یا جداگانه درصدها (۵٪، ۱۰٪، ۲۵٪، ۳۰٪...)", callback_data="pct_custom_menu"),
+        types.InlineKeyboardButton("🔙 بازگشت به مرحله ورود رتبه", callback_data="back_to_rank")
     )
     return markup
 
@@ -601,6 +602,9 @@ def get_custom_percentage_keyboard(opt_pct=30, pess_pct=25):
     
     markup.row(
         types.InlineKeyboardButton(f"✅ تایید درصدها ({to_persian_num(opt_pct)}٪ خوش‌بینانه / {to_persian_num(pess_pct)}٪ بدبینانه) و ادامه ➡️", callback_data="pct_confirm")
+    )
+    markup.row(
+        types.InlineKeyboardButton("🔙 بازگشت به منوی درصدها", callback_data="back_to_presets")
     )
     return markup
 
@@ -650,6 +654,7 @@ def get_source_keyboard(selected_sources=None):
     else:
         confirm_text = "✅ تایید همه منابع و ادامه ➡️"
         markup.add(types.InlineKeyboardButton(confirm_text, callback_data="src_all"))
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت به تنظیم درصدها", callback_data="back_to_percentages"))
         
     return markup
 
@@ -695,7 +700,8 @@ def build_majors_keyboard(selected_list, current_cat='doctor'):
         types.InlineKeyboardButton(confirm_text, callback_data="maj_confirm")
     )
     markup.row(
-        types.InlineKeyboardButton("🗑 پاک کردن انتخاب‌ها", callback_data="maj_clear")
+        types.InlineKeyboardButton("🗑 پاک کردن انتخاب‌ها", callback_data="maj_clear"),
+        types.InlineKeyboardButton("🔙 بازگشت به انتخاب منابع", callback_data="back_to_source")
     )
     return markup
 
@@ -709,6 +715,7 @@ def build_native_province_keyboard():
     
     for i in range(0, len(buttons), 3):
         markup.row(*buttons[i:i+3])
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت به انتخاب رشته‌ها", callback_data="back_to_majors"))
     return markup
 
 def send_native_province_prompt(chat_id, message_id=None):
@@ -759,6 +766,7 @@ def build_provinces_keyboard(selected_list):
         types.InlineKeyboardButton(confirm_text, callback_data="prov_confirm"),
         types.InlineKeyboardButton("🗑 پاک کردن استان‌ها", callback_data="prov_clear")
     )
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت به سهمیه تعهد خدمت", callback_data="back_to_native_prov"))
     return markup
 
 # =====================================================================
@@ -823,12 +831,15 @@ def callback_region(call):
     
     reg_name = f"منطقه {reg_val}" if reg_val in [1, 2, 3] else "سهمیه ۵ درصد ایثارگران"
     bot.answer_callback_query(call.id, f"{reg_name} انتخاب شد.")
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 بازگشت به انتخاب سهمیه", callback_data="back_to_region"))
     bot.edit_message_text(
         f"✅ سهمیه **{reg_name}** ثبت شد.\n\n"
         "🎯 لطفاً **رتبه در سهمیه** خود را به‌صورت عدد ارسال فرمایید (مثلاً: `6500`):",
         chat_id=chat_id,
         message_id=call.message.message_id,
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=markup
     )
 
 # =====================================================================
@@ -1296,7 +1307,8 @@ def proceed_to_score_columns_prompt(chat_id, message_id=None):
     btn_yes = types.InlineKeyboardButton("📊 نسخه کامل اکسل (همراه با ستون‌های نمره‌دهی)", callback_data="scoreopt_yes")
     btn_no_pdf = types.InlineKeyboardButton("📑 نسخه ساده اکسل + فایل‌های PDF چاپی (افقی A4)", callback_data="scoreopt_no_pdf")
     btn_no = types.InlineKeyboardButton("📋 نسخه ساده اکسل (بدون ستون‌های نمره‌دهی)", callback_data="scoreopt_no")
-    markup.add(btn_yes_pdf, btn_yes, btn_no_pdf, btn_no)
+    btn_back = types.InlineKeyboardButton("🔙 بازگشت به انتخاب استان‌ها", callback_data="back_to_provinces")
+    markup.add(btn_yes_pdf, btn_yes, btn_no_pdf, btn_no, btn_back)
     
     msg_text = (
         "⚙️ **تنظیمات نهایی فایل‌های خروجی (اکسل و PDF):**\n\n"
@@ -1331,12 +1343,71 @@ def callback_score_option(call):
     user_state[chat_id]['export_pdf'] = ('pdf' in opt_type)
     if opt_type.startswith('yes'):
         user_state[chat_id]['include_scores'] = True
-        bot.answer_callback_query(call.id, "نسخه با ستون‌های نمره‌دهی انتخاب شد.")
+        bot.answer_callback_query(call.id, "در حال تولید گزارش‌ها...")
     else:
         user_state[chat_id]['include_scores'] = False
-        bot.answer_callback_query(call.id, "نسخه ساده بدون نمره‌دهی انتخاب شد.")
+        bot.answer_callback_query(call.id, "در حال تولید گزارش‌ها...")
         
     execute_search_and_send(chat_id)
+
+# =====================================================================
+# 🔙 هندلر دکمه‌های بازگشت به مراحل قبل (Back Navigation Handler)
+# =====================================================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('back_'))
+def callback_back_navigation(call):
+    chat_id = call.message.chat.id
+    if not is_authenticated(chat_id):
+        save_auth_user(chat_id)
+        
+    data = call.data
+    bot.answer_callback_query(call.id, "بازگشت به مرحله قبل")
+    
+    if data == "back_to_region":
+        user_state[chat_id]['step'] = 'select_region'
+        welcome_text = "📍 **لطفاً سهمیه یا منطقه خود را انتخاب فرمایید:**"
+        try:
+            bot.edit_message_text(welcome_text, chat_id=chat_id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=get_region_keyboard())
+        except Exception:
+            bot.send_message(chat_id, welcome_text, parse_mode='Markdown', reply_markup=get_region_keyboard())
+
+    elif data == "back_to_rank":
+        user_state[chat_id]['step'] = 'enter_rank'
+        reg_val = user_state[chat_id].get('region', 2)
+        reg_name = f"منطقه {reg_val}" if reg_val in [1, 2, 3] else "سهمیه ۵ درصد ایثارگران"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 بازگشت به انتخاب سهمیه", callback_data="back_to_region"))
+        text = (
+            f"✅ سهمیه **{reg_name}** ثبت گردیده است.\n\n"
+            "🎯 لطفاً **رتبه در سهمیه** خود را به‌صورت عدد ارسال فرمایید (مثلاً: `6500`):"
+        )
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, parse_mode='Markdown', reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
+
+    elif data == "back_to_presets":
+        user_state[chat_id]['step'] = 'select_percentages'
+        send_percentage_selection_prompt(chat_id, message_id=call.message.message_id)
+
+    elif data == "back_to_percentages":
+        user_state[chat_id]['step'] = 'select_percentages'
+        send_percentage_selection_prompt(chat_id, message_id=call.message.message_id)
+
+    elif data == "back_to_source":
+        user_state[chat_id]['step'] = 'select_source'
+        proceed_to_source_step(chat_id, message_id=call.message.message_id)
+
+    elif data == "back_to_majors":
+        user_state[chat_id]['step'] = 'select_majors'
+        send_majors_selection_prompt(chat_id, message_id=call.message.message_id)
+
+    elif data == "back_to_native_prov":
+        user_state[chat_id]['step'] = 'select_native_prov'
+        send_native_province_prompt(chat_id, message_id=call.message.message_id)
+
+    elif data == "back_to_provinces":
+        user_state[chat_id]['step'] = 'select_provinces'
+        send_provinces_selection_prompt(chat_id, message_id=call.message.message_id)
 
 # =====================================================================
 # ✍️ هندلر ورودی‌های متنی چت (Password, Rank, Percentages, Majors, Provinces)
@@ -2344,6 +2415,8 @@ def execute_search_and_send(chat_id):
     reg_title = f"منطقه {region}" if region in [1, 2, 3] else "سهمیه ۵ درصد ایثارگران"
     opt_p = state.get('opt_pct', 30)
     pess_p = state.get('pess_pct', 25)
+    include_scores = state.get('include_scores', True)
+    export_pdf = state.get('export_pdf', False)
     selected_sources = state.get('selected_sources', [])
     src_filter = state.get('source', 'همه')
     src_label = state.get('source_label', '🌐 همه با هم')
@@ -2488,6 +2561,9 @@ def execute_search_and_send(chat_id):
     # ذخیره در state کاربر برای امکان دانلود مستقیم PDF در هر لحظه
     user_state[chat_id]['last_filtered'] = filtered.copy()
 
+    # پیام وضعیت در حال پردازش جهت بازخورد بصری به کاربر
+    proc_msg = bot.send_message(chat_id, "⏳ در حال ساخت و ارسال فایل‌های انتخاب رشته... لطفاً چند لحظه شکیبا باشید.")
+
     # -------------------------------------------------------------
     # 💬 پیام خلاصه نهایی
     # -------------------------------------------------------------
@@ -2534,46 +2610,52 @@ def execute_search_and_send(chat_id):
         bot.send_message(chat_id, checklist_text, parse_mode='Markdown')
 
     # -------------------------------------------------------------
-    # 📑 تولید و ارسال فایل اکسل ۱: اولویت‌بندی بر اساس امتیاز کل
+    # 📑 تولید و ارسال فایل اکسل ۱ و ۲ داخل بلوک امن try/except
     # -------------------------------------------------------------
-    clean_reg_name = reg_title.replace(' ', '_')
-    file_title_prio = f"۱_اولویت_بندی_بر_اساس_امتیاز_رتبه_{rank}_{clean_reg_name}.xlsx" if include_scores else f"۱_اولویت_بندی_انتخاب_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
-    buf_prio = build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
-    
-    bot.send_document(
-        chat_id, 
-        buf_prio, 
-        visible_file_name=file_title_prio, 
-        caption=(
-            f"📁 **فایل اکسل اول: اولویت‌بندی کلی بر اساس امتیاز و شانس قبولی**\n\n"
-            f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
-            f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره.\n"
-            f"🖋 فونت: پینار (Pinar)\n"
-            f"⚙️ **قالب:** {format_label}"
-        ),
-        parse_mode='Markdown'
-    )
+    try:
+        clean_reg_name = reg_title.replace(' ', '_')
+        file_title_prio = f"۱_اولویت_بندی_بر_اساس_امتیاز_رتبه_{rank}_{clean_reg_name}.xlsx" if include_scores else f"۱_اولویت_بندی_انتخاب_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
+        buf_prio = build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
+        
+        bot.send_document(
+            chat_id, 
+            buf_prio, 
+            visible_file_name=file_title_prio, 
+            caption=(
+                f"📁 **فایل اکسل اول: اولویت‌بندی کلی بر اساس امتیاز و شانس قبولی**\n\n"
+                f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+                f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره.\n"
+                f"🖋 فونت: پینار (Pinar)\n"
+                f"⚙️ **قالب:** {format_label}"
+            ),
+            parse_mode='Markdown'
+        )
 
-    # -------------------------------------------------------------
-    # 📑 تولید و ارسال فایل اکسل ۲: تفکیک بر اساس رشته‌ها پشت‌سرهم
-    # -------------------------------------------------------------
-    file_title_major = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
-    buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
-    
-    bot.send_document(
-        chat_id, 
-        buf_major, 
-        visible_file_name=file_title_major, 
-        caption=(
-            f"📁 **فایل اکسل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
-            f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
-            f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای.\n"
-            f"🖋 فونت: پینار (Pinar)\n"
-            f"⚙️ **قالب:** {format_label}"
-        ),
-        parse_mode='Markdown'
-    )
-    
+        file_title_major = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
+        buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
+        
+        bot.send_document(
+            chat_id, 
+            buf_major, 
+            visible_file_name=file_title_major, 
+            caption=(
+                f"📁 **فایل اکسل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
+                f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+                f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای.\n"
+                f"🖋 فونت: پینار (Pinar)\n"
+                f"⚙️ **قالب:** {format_label}"
+            ),
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        print(f"❌ خطا در تولید یا ارسال فایل‌های اکسل: {e}")
+        bot.send_message(chat_id, f"⚠️ متأسفانه در ارسال فایل‌های اکسل خطایی رخ داد: {e}")
+
+    try:
+        bot.delete_message(chat_id, proc_msg.message_id)
+    except Exception:
+        pass
+
     # -------------------------------------------------------------
     # 📄 ارسال فایل‌های PDF چاپی (در صورت درخواست در منو)
     # -------------------------------------------------------------
