@@ -4,10 +4,21 @@ import io
 import re
 import json
 import socket
+import textwrap
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 import time
 import urllib.request
@@ -21,6 +32,79 @@ BOT_PASSWORD = '1381'
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTH_FILE = os.path.join(BASE_DIR, 'auth_users.json')
+
+# =====================================================================
+# 🖋 تنظیم فونت پینار (Pinar) و سیستم چاپ PDF افقی فارسی
+# =====================================================================
+PINAR_FONT_PATH = os.path.join(BASE_DIR, 'Pinar-Regular.ttf')
+if os.path.exists(PINAR_FONT_PATH):
+    try:
+        pdfmetrics.registerFont(TTFont('Pinar', PINAR_FONT_PATH))
+        PDF_FONT_NAME = 'Pinar'
+    except Exception as e:
+        print(f"Error registering Pinar font in ReportLab: {e}")
+        PDF_FONT_NAME = 'Helvetica'
+else:
+    PDF_FONT_NAME = 'Helvetica'
+
+reshaper = arabic_reshaper.ArabicReshaper({
+    'delete_harakat': False,
+    'support_ligatures': True,
+})
+
+def fa_text(text, wrap_width=None):
+    if text is None:
+        return ''
+    s = str(text).strip()
+    if not s or s == '-':
+        return '-'
+    if wrap_width and len(s) > wrap_width:
+        lines = textwrap.wrap(s, width=wrap_width)
+        reshaped_lines = [get_display(reshaper.reshape(l)) for l in lines]
+        return '<br/>'.join(reshaped_lines)
+    try:
+        return get_display(reshaper.reshape(s))
+    except Exception:
+        return s
+
+class NumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_decorations(num_pages)
+            super().showPage()
+        super().save()
+
+    def draw_page_decorations(self, page_count):
+        self.saveState()
+        self.setFont(PDF_FONT_NAME, 8)
+        self.setFillColor(colors.HexColor('#555555'))
+        w, h = 841.89, 595.27
+        # خط افقی بالای صفحه
+        self.setStrokeColor(colors.HexColor('#002060'))
+        self.setLineWidth(1)
+        self.line(20, h - 22, w - 20, h - 22)
+        top_txt = get_display(reshaper.reshape('سامانه هوشمند انتخاب رشته تجربی ۱۴۰۴ | نسخه رسمی چاپی افقی'))
+        self.drawRightString(w - 20, h - 18, top_txt)
+        
+        # خط افقی پایین صفحه
+        self.setStrokeColor(colors.HexColor('#D9D9D9'))
+        self.setLineWidth(0.5)
+        self.line(20, 20, w - 20, 20)
+        page_str = get_display(reshaper.reshape(f'صفحه {self._pageNumber} از {page_count}'))
+        self.drawString(25, 11, page_str)
+        note_str = get_display(reshaper.reshape('تنظیم‌شده بر اساس بالاترین شانس قبولی و اولویت‌بندی علمی'))
+        self.drawRightString(w - 20, 11, note_str)
+        self.restoreState()
 
 # =====================================================================
 # 🔐 سیستم احراز هویت با رمز عبور و ذخیره‌سازی دائمی
@@ -520,15 +604,53 @@ def get_custom_percentage_keyboard(opt_pct=30, pess_pct=25):
     )
     return markup
 
-def get_source_keyboard():
+AVAILABLE_SOURCES = {
+    '1404': '🔥 اخرین قبولی تجربی 1404  (1)',
+    '1403': '📋 اخرین قبولی تجربی 1403',
+    '5pct': '🎖 آخرین رتبه های قبولی تجربی سهمیه 5 درصد 1404',
+    'sanjesh': '📊 مرجع جامع کشوری سنجش و دانشگاه‌ها',
+    'mehromaah': '📚 اخرین قبولی ها فایل مهر و ماه'
+}
+
+def get_sources_display_label(selected_sources):
+    if not selected_sources or 'all' in selected_sources or len(selected_sources) == len(AVAILABLE_SOURCES):
+        return '🌐 همه با هم (پایگاه تجمیعی کامل)'
+    
+    short_names = {
+        '1404': '🔥 ۱۴۰۴',
+        '1403': '📋 ۱۴۰۳',
+        '5pct': '🎖 ۵ درصد',
+        'sanjesh': '📊 سنجش',
+        'mehromaah': '📚 مهروماه'
+    }
+    names = [short_names.get(k, k) for k in selected_sources if k in short_names]
+    return ' + '.join(names) if names else '🌐 همه با هم'
+
+def get_source_keyboard(selected_sources=None):
+    if selected_sources is None:
+        selected_sources = []
     markup = types.InlineKeyboardMarkup(row_width=1)
+    
+    # دکمه میانبر سریع انتخاب همه پایگاه‌ها باهم
     markup.add(
-        types.InlineKeyboardButton("🌐 همه با هم (پایگاه تجمیعی کامل - ۱۳,۳۰۰ رکورد)", callback_data="src_all"),
-        types.InlineKeyboardButton("🔥 اخرین قبولی تجربی 1404  (1)", callback_data="src_1404"),
-        types.InlineKeyboardButton("📋 اخرین قبولی تجربی 1403", callback_data="src_1403"),
-        types.InlineKeyboardButton("🎖 آخرین رتبه های قبولی تجربی سهمیه 5 درصد 1404", callback_data="src_5pct"),
-        types.InlineKeyboardButton("📊 مرجع جامع کشوری سنجش و دانشگاه‌ها", callback_data="src_sanjesh")
+        types.InlineKeyboardButton("🌐 همه با هم (پایگاه تجمیعی کامل - ۱۷,۴۶۰ رکورد)", callback_data="src_all")
     )
+    for src_key, src_title in AVAILABLE_SOURCES.items():
+        is_sel = src_key in selected_sources
+        prefix = "✅ " if is_sel else "◻️ "
+        markup.add(
+            types.InlineKeyboardButton(f"{prefix}{src_title}", callback_data=f"src_toggle_{src_key}")
+        )
+    
+    cnt = len(selected_sources)
+    if cnt > 0:
+        confirm_text = f"✅ تایید منابع انتخابی ({to_persian_num(cnt)} منبع) و ادامه ➡️"
+        markup.add(types.InlineKeyboardButton(confirm_text, callback_data="src_confirm"))
+        markup.add(types.InlineKeyboardButton("🗑 پاک کردن انتخاب‌ها", callback_data="src_clear"))
+    else:
+        confirm_text = "✅ تایید همه منابع و ادامه ➡️"
+        markup.add(types.InlineKeyboardButton(confirm_text, callback_data="src_all"))
+        
     return markup
 
 def build_majors_keyboard(selected_list, current_cat='doctor'):
@@ -668,13 +790,14 @@ def send_welcome(message):
         'selected_provinces': [],
         'prov_scores': {},
         'native_province': None,
-        'include_scores': True
+        'include_scores': True,
+        'selected_sources': []
     }
     
     welcome_text = (
         "👋 **به ربات هوشمند انتخاب رشته تجربی خوش آمدید!**\n\n"
         "✨ **سیستم اولویت‌بندی اختصاصی و تصمیم‌گیری چندمعیاره:**\n"
-        "▫️ پایگاه داده جامع ۱۳,۳۰۰ کارنامه قبولی (۱۴۰۴، ۱۴۰۳، سهمیه ۵ درصد و سنجش)\n"
+        "▫️ پایگاه داده جامع ۱۷,۴۶۰ کارنامه قبولی (۱۴۰۴، ۱۴۰۳، سهمیه ۵ درصد، سنجش و مهروماه)\n"
         "▫️ نمره‌دهی خطی (۱ تا ۱۰) به ترتیب علاقه و ترجیح سکونت\n"
         "▫️ فرمول ارزیابی: `(نمره رشته × ۱.۲) + (نمره شهر × ۱.۰) × ضریب دوره`\n"
         "▫️ تفکیک دوره‌ها: روزانه (۱.۰)، پردیس (۰.۸۵)، تعهدی (۰.۹۰) و آزاد (۰.۷۵)\n"
@@ -817,6 +940,7 @@ def callback_pct_info(call):
 
 def proceed_to_source_step(chat_id, message_id=None):
     user_state[chat_id]['step'] = 'select_source'
+    user_state[chat_id]['selected_sources'] = []
     opt_p = user_state[chat_id].get('opt_pct', 30)
     pess_p = user_state[chat_id].get('pess_pct', 25)
     rank = user_state[chat_id].get('rank', 5000)
@@ -825,9 +949,10 @@ def proceed_to_source_step(chat_id, message_id=None):
     
     prompt_text = (
         f"🎯 **بازه استعلام فعال:** {opt_p}٪ خوش‌بینانه ({min_r:,}) تا {pess_p}٪ بدبینانه ({max_r:,})\n\n"
-        "🔍 **مایلید استعلام قبولی‌ها بر اساس کدام پایگاه داده انجام شود؟**"
+        "🔍 **مایلید استعلام قبولی‌ها بر اساس کدام پایگاه‌های داده انجام شود؟**\n"
+        "💡 *می‌توانید یک یا چند منبع را به دلخواه انتخاب و سپس دکمه تایید را لمس فرمایید.*"
     )
-    keyboard = get_source_keyboard()
+    keyboard = get_source_keyboard([])
     if message_id:
         try:
             bot.edit_message_text(prompt_text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=keyboard)
@@ -845,28 +970,96 @@ def callback_source(call):
     if not is_authenticated(chat_id):
         save_auth_user(chat_id)
         
-    src_key = call.data.split('_')[1]
-    
-    source_map = {
-        'all': ('همه', '🌐 همه با هم (پایگاه تجمیعی کامل)'),
-        '1404': ('۱۴۰۴', '🔥 اخرین قبولی تجربی 1404  (1)'),
-        '1403': ('۱۴۰۳', '📋 اخرین قبولی تجربی 1403'),
-        '5pct': ('۵درصد', '🎖 آخرین رتبه های قبولی تجربی سهمیه 5 درصد 1404'),
-        'sanjesh': ('سنجش', '📊 مرجع جامع کشوری سنجش و دانشگاه‌ها')
-    }
-    src_code, src_label = source_map.get(src_key, ('همه', '🌐 همه با هم'))
-    
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
-    user_state[chat_id]['source'] = src_code
-    user_state[chat_id]['source_label'] = src_label
-    user_state[chat_id]['selected_majors'] = []
-    user_state[chat_id]['major_scores'] = {}
-    user_state[chat_id]['current_major_cat'] = 'doctor'
-    user_state[chat_id]['step'] = 'select_majors'
+        
+    data = call.data
     
-    bot.answer_callback_query(call.id, "منبع انتخاب شد.")
-    send_majors_selection_prompt(chat_id, message_id=call.message.message_id)
+    if data == "src_all":
+        user_state[chat_id]['selected_sources'] = ['all']
+        user_state[chat_id]['source'] = 'همه'
+        user_state[chat_id]['source_label'] = '🌐 همه با هم (پایگاه تجمیعی کامل)'
+        user_state[chat_id]['selected_majors'] = []
+        user_state[chat_id]['major_scores'] = {}
+        user_state[chat_id]['current_major_cat'] = 'doctor'
+        user_state[chat_id]['step'] = 'select_majors'
+        bot.answer_callback_query(call.id, "همه منابع انتخاب شدند.")
+        send_majors_selection_prompt(chat_id, message_id=call.message.message_id)
+        return
+
+    elif data == "src_clear":
+        user_state[chat_id]['selected_sources'] = []
+        bot.answer_callback_query(call.id, "انتخاب‌ها پاک شدند.")
+        keyboard = get_source_keyboard([])
+        try:
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard)
+        except Exception:
+            pass
+        return
+
+    elif data == "src_confirm":
+        selected_sources = user_state[chat_id].get('selected_sources', [])
+        if not selected_sources:
+            selected_sources = ['all']
+            src_label = '🌐 همه با هم (پایگاه تجمیعی کامل)'
+            src_code = 'همه'
+        else:
+            src_label = get_sources_display_label(selected_sources)
+            src_code = '+'.join(selected_sources)
+            
+        user_state[chat_id]['selected_sources'] = selected_sources
+        user_state[chat_id]['source'] = src_code
+        user_state[chat_id]['source_label'] = src_label
+        user_state[chat_id]['selected_majors'] = []
+        user_state[chat_id]['major_scores'] = {}
+        user_state[chat_id]['current_major_cat'] = 'doctor'
+        user_state[chat_id]['step'] = 'select_majors'
+        
+        cnt = len(AVAILABLE_SOURCES) if 'all' in selected_sources else len(selected_sources)
+        bot.answer_callback_query(call.id, f"{to_persian_num(cnt)} منبع تایید شد.")
+        send_majors_selection_prompt(chat_id, message_id=call.message.message_id)
+        return
+
+    elif data.startswith("src_toggle_"):
+        src_key = data.replace("src_toggle_", "")
+        selected_sources = user_state[chat_id].get('selected_sources', [])
+        if 'all' in selected_sources:
+            selected_sources = []
+            
+        if src_key in selected_sources:
+            selected_sources.remove(src_key)
+            bot.answer_callback_query(call.id, "حذف شد")
+        else:
+            if src_key in AVAILABLE_SOURCES:
+                selected_sources.append(src_key)
+                bot.answer_callback_query(call.id, "انتخاب شد")
+            else:
+                bot.answer_callback_query(call.id)
+                
+        user_state[chat_id]['selected_sources'] = selected_sources
+        keyboard = get_source_keyboard(selected_sources)
+        try:
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard)
+        except Exception:
+            pass
+        return
+
+    else:
+        # پشتیبانی از دکمه‌های تکی احتمالی
+        src_key = data.split('_')[1]
+        if src_key in AVAILABLE_SOURCES:
+            selected_sources = [src_key]
+            src_label = get_sources_display_label(selected_sources)
+            user_state[chat_id]['selected_sources'] = selected_sources
+            user_state[chat_id]['source'] = src_key
+            user_state[chat_id]['source_label'] = src_label
+            user_state[chat_id]['selected_majors'] = []
+            user_state[chat_id]['major_scores'] = {}
+            user_state[chat_id]['current_major_cat'] = 'doctor'
+            user_state[chat_id]['step'] = 'select_majors'
+            bot.answer_callback_query(call.id, f"منبع {src_label} انتخاب شد.")
+            send_majors_selection_prompt(chat_id, message_id=call.message.message_id)
+            return
 
 def send_majors_selection_prompt(chat_id, message_id=None):
     selected = user_state[chat_id].get('selected_majors', [])
@@ -1099,16 +1292,19 @@ def proceed_to_score_columns_prompt(chat_id, message_id=None):
     user_state[chat_id]['step'] = 'select_score_columns'
     
     markup = types.InlineKeyboardMarkup(row_width=1)
-    btn_yes = types.InlineKeyboardButton("📊 نسخه کامل (همراه با ستون‌های نمره‌دهی و فرمول)", callback_data="scoreopt_yes")
-    btn_no = types.InlineKeyboardButton("📋 نسخه ساده (بدون ستون‌های نمره‌دهی - ساده و روان)", callback_data="scoreopt_no")
-    markup.add(btn_yes, btn_no)
+    btn_yes_pdf = types.InlineKeyboardButton("📑 نسخه کامل اکسل + فایل‌های PDF چاپی (افقی A4)", callback_data="scoreopt_yes_pdf")
+    btn_yes = types.InlineKeyboardButton("📊 نسخه کامل اکسل (همراه با ستون‌های نمره‌دهی)", callback_data="scoreopt_yes")
+    btn_no_pdf = types.InlineKeyboardButton("📑 نسخه ساده اکسل + فایل‌های PDF چاپی (افقی A4)", callback_data="scoreopt_no_pdf")
+    btn_no = types.InlineKeyboardButton("📋 نسخه ساده اکسل (بدون ستون‌های نمره‌دهی)", callback_data="scoreopt_no")
+    markup.add(btn_yes_pdf, btn_yes, btn_no_pdf, btn_no)
     
     msg_text = (
-        "⚙️ **تنظیمات نهایی فایل‌های اکسل خروجی:**\n\n"
-        "آیا مایلید ستون‌های نمره‌دهی و محاسباتی (شامل امتیاز کل، نمره رشته، نمره شهر و ضریب دوره) در فایل‌های اکسل درج شوند؟\n\n"
-        "▫️ **📊 نسخه کامل:** نمایش تمام ستون‌های محاسباتی، نمرات ۱ تا ۱۰ رشته و شهر، ضریب دوره و امتیاز نهایی فرمول.\n"
-        "▫️ **📋 نسخه ساده:** فایل تمیز، شیک و بدون ستون‌های نمره‌دهی (شامل رشته، دانشگاه، رتبه قبولی، استان، دوره، شانس قبولی و رتبه کشوری).\n\n"
-        "💡 *در هر دو حالت، کدرشته‌ها بر اساس بالاترین اولویت و شانس دقیق شما چینش می‌شوند.*"
+        "⚙️ **تنظیمات نهایی فایل‌های خروجی (اکسل و PDF):**\n\n"
+        "آیا مایلید ستون‌های نمره‌دهی و فرمول اولویت‌بندی در گزارش‌ها درج شوند؟\n\n"
+        "▫️ **📊 نسخه کامل:** نمایش تمام ستون‌های محاسباتی، نمرات ۱ تا ۱۰ رشته و شهر، ضریب دوره و امتیاز کل اولویت.\n"
+        "▫️ **📋 نسخه ساده:** فایل‌های شیک و رسمی بدون ستون‌های نمره‌دهی (شامل رشته، دانشگاه، رتبه قبولی، استان، دوره، شانس قبولی و رتبه کشوری).\n\n"
+        "🖨 **نسخه چاپی PDF:** هر دو فایل با چیدمان افقی استاندارد (Landscape A4) و فونت شکیل پینار (Pinar) بدون به‌هم‌ریختگی ستون‌ها و مناسب پرینت مستقیم آماده می‌شوند.\n\n"
+        "💡 *در تمام حالت‌ها، کدرشته‌ها بر اساس بالاترین اولویت و شانس دقیق شما چینش می‌گردند.*"
     )
     
     if message_id:
@@ -1131,8 +1327,9 @@ def callback_score_option(call):
     if not is_authenticated(chat_id):
         save_auth_user(chat_id)
         
-    choice = call.data.split('_')[1]
-    if choice == 'yes':
+    opt_type = call.data[9:]
+    user_state[chat_id]['export_pdf'] = ('pdf' in opt_type)
+    if opt_type.startswith('yes'):
         user_state[chat_id]['include_scores'] = True
         bot.answer_callback_query(call.id, "نسخه با ستون‌های نمره‌دهی انتخاب شد.")
     else:
@@ -1355,7 +1552,7 @@ def add_native_checklist_sheet(wb, filtered, selected_majors, native_prov):
     if not native_prov or native_prov == 'بدون تعهدی':
         return
         
-    font_name = 'B Nazanin'
+    font_name = 'Pinar'
     h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     d_font = Font(name=font_name, size=11, color='000000')
@@ -1421,7 +1618,7 @@ def add_native_checklist_sheet(wb, filtered, selected_majors, native_prov):
         ws2.column_dimensions[col_letter].width = max(max_l + 3, 14)
 
 def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
-    font_name = 'B Nazanin'
+    font_name = 'Pinar'
     h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     d_font = Font(name=font_name, size=11, color='000000')
@@ -1544,7 +1741,7 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
     return buf
 
 def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
-    font_name = 'B Nazanin'
+    font_name = 'Pinar'
     h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
     d_font = Font(name=font_name, size=11, color='000000')
@@ -1697,6 +1894,447 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
     return buf
 
 # =====================================================================
+# 📄 توابع ساخت و رندر فایل‌های PDF با چیدمان افقی و فونت پینار
+# =====================================================================
+def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=20,
+        rightMargin=20,
+        topMargin=26,
+        bottomMargin=26
+    )
+    story = []
+
+    # عنوان سند
+    title_style = ParagraphStyle(
+        'DocTitle',
+        fontName=PDF_FONT_NAME,
+        fontSize=12,
+        leading=15,
+        alignment=1,
+        textColor=colors.HexColor('#002060'),
+        spaceAfter=5
+    )
+    story.append(Paragraph(fa_text('📋 گزارش رسمی اولویت‌بندی انتخاب رشته تجربی (چیدمان کلی بر اساس شانس و امتیاز)'), title_style))
+
+    # مشخصات داوطلب در کادر بالا
+    min_rank = max(1, int(rank * (1 - opt_p / 100.0)))
+    max_rank = int(rank * (1 + pess_p / 100.0))
+    tahad_status = f"بومی استان {native_prov}" if (native_prov and native_prov != 'بدون تعهدی') else "بدون کدرشته‌های تعهدی"
+    format_label = "نسخه کامل (همراه با ستون‌های نمره‌دهی)" if include_scores else "نسخه ساده (بدون ستون‌های نمره‌دهی)"
+    
+    meta_p1 = f"سهمیه: {reg_title}  |  رتبه در سهمیه: {rank:,}  |  بازه تحلیلی: {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})"
+    meta_p2 = f"وضعیت تعهد خدمت: {tahad_status}  |  تعداد کدرشته‌های استخراج‌شده: {len(filtered):,} رشته‌محل  |  قالب گزارش: {format_label}"
+
+    meta_style = ParagraphStyle(
+        'MetaStyle',
+        fontName=PDF_FONT_NAME,
+        fontSize=7.5,
+        leading=10,
+        alignment=1,
+        textColor=colors.HexColor('#222222')
+    )
+    meta_table = Table(
+        [
+            [Paragraph(fa_text(meta_p1), meta_style)],
+            [Paragraph(fa_text(meta_p2), meta_style)]
+        ],
+        colWidths=[800]
+    )
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F2F5F9')),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#B0C4DE')),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 5))
+
+    # تعریف استایل‌های سلول‌های جدول
+    style_h = ParagraphStyle('Head', fontName=PDF_FONT_NAME, fontSize=7.5, leading=9.5, alignment=1, textColor=colors.white)
+    style_cell_c = ParagraphStyle('CellC', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#111111'))
+    style_cell_r = ParagraphStyle('CellR', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=2, textColor=colors.HexColor('#111111'))
+    style_cell_bold = ParagraphStyle('CellB', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#002060'))
+
+    if include_scores:
+        headers = [
+            'منبع و سال', 'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
+            'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان', 'رتبه در سهمیه',
+            'دانشگاه قبولی', 'رشته قبولی', 'اولویت'
+        ]
+        col_widths = [70, 35, 35, 35, 45, 45, 70, 60, 50, 50, 165, 110, 30]
+    else:
+        headers = [
+            'منبع و سال', 'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
+            'رتبه در سهمیه', 'دانشگاه قبولی', 'رشته قبولی', 'اولویت'
+        ]
+        col_widths = [90, 55, 85, 70, 65, 65, 200, 135, 35]
+
+    table_data = []
+    # ردیف هدر
+    table_data.append([Paragraph(fa_text(h), style_h) for h in headers])
+
+    for _, r in filtered.iterrows():
+        r_val = int(r['رتبه در سهمیه'])
+        chance_text = get_chance_text(r_val, rank, opt_p, pess_p)
+        r_keshvari_val = r.get('رتبه کشوری', '-')
+        if str(r_keshvari_val).isdigit() and int(r_keshvari_val) > 0:
+            k_disp = f"{int(r_keshvari_val):,}"
+        else:
+            k_disp = str(r_keshvari_val)
+
+        if include_scores:
+            row = [
+                Paragraph(fa_text(str(r.get('منبع', '-'))[:35], wrap_width=16), style_cell_c),
+                Paragraph(fa_text(f"{float(r.get('ضریب_دوره', 1.0)):.2f}"), style_cell_c),
+                Paragraph(fa_text(f"{float(r.get('نمره_استان', 5.0)):.1f}"), style_cell_c),
+                Paragraph(fa_text(f"{float(r.get('نمره_رشته', 5.0)):.1f}"), style_cell_c),
+                Paragraph(fa_text(f"{float(r.get('امتیاز_کل', 0.0)):.2f}"), style_cell_bold),
+                Paragraph(fa_text(k_disp), style_cell_c),
+                Paragraph(fa_text(chance_text), style_cell_c),
+                Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
+                Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
+                Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
+                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=25), style_cell_r),
+                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=18), style_cell_r),
+                Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold)
+            ]
+        else:
+            row = [
+                Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=20), style_cell_c),
+                Paragraph(fa_text(k_disp), style_cell_c),
+                Paragraph(fa_text(chance_text), style_cell_c),
+                Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
+                Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
+                Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
+                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=30), style_cell_r),
+                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=22), style_cell_r),
+                Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold)
+            ]
+        table_data.append(row)
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    ts = [
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#002060')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.5),
+        ('TOPPADDING', (0,0), (-1,-1), 1.5),
+        ('LEFTPADDING', (0,0), (-1,-1), 2),
+        ('RIGHTPADDING', (0,0), (-1,-1), 2),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D9D9D9')),
+    ]
+    for idx, (_, r) in enumerate(filtered.iterrows(), 1):
+        is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
+        if is_row_tahad:
+            ts.append(('BACKGROUND', (0, idx), (-1, idx), colors.HexColor('#FFF2CC')))
+        elif idx % 2 == 1:
+            ts.append(('BACKGROUND', (0, idx), (-1, idx), colors.HexColor('#F2F5F9')))
+    t.setStyle(TableStyle(ts))
+    story.append(t)
+
+    # باکس یادآوری کدرشته‌های تعهد خدمت
+    if native_prov and native_prov != 'بدون تعهدی':
+        story.append(Spacer(1, 6))
+        warn_style = ParagraphStyle(
+            'Warn',
+            fontName=PDF_FONT_NAME,
+            fontSize=7.5,
+            leading=10,
+            alignment=1,
+            textColor=colors.HexColor('#9C6500')
+        )
+        warn_msg = (
+            f"💡 یادآوری مهم مشاور درباره کدرشته‌های تعهد خدمت استان {native_prov}: "
+            f"کدرشته‌های تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی) منحصراً متعلق به داوطلبان بومی استان {native_prov} است. "
+            f"با توجه به متغیر بودن ظرفیت‌ها در هر سال، حتماً کدرشته‌های تعهدی دانشگاه‌های علوم پزشکی استان خود را در دفترچه انتخاب رشته امسال بررسی و در لیست نهایی درج فرمایید."
+        )
+        warn_table = Table([[Paragraph(fa_text(warn_msg), warn_style)]], colWidths=[800])
+        warn_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FFF2CC')),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#E0B86C')),
+            ('TOPPADDING', (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ]))
+        story.append(warn_table)
+
+    doc.build(story, canvasmaker=NumberedCanvas)
+    buf.seek(0)
+    return buf
+
+def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=20,
+        rightMargin=20,
+        topMargin=26,
+        bottomMargin=26
+    )
+    story = []
+
+    # عنوان سند
+    title_style = ParagraphStyle(
+        'DocTitle2',
+        fontName=PDF_FONT_NAME,
+        fontSize=12,
+        leading=15,
+        alignment=1,
+        textColor=colors.HexColor('#002060'),
+        spaceAfter=5
+    )
+    story.append(Paragraph(fa_text('📋 گزارش رسمی تفکیک موضوعی بر اساس رشته (چیدمان رشته‌ها پشت‌سرهم)'), title_style))
+
+    min_rank = max(1, int(rank * (1 - opt_p / 100.0)))
+    max_rank = int(rank * (1 + pess_p / 100.0))
+    tahad_status = f"بومی استان {native_prov}" if (native_prov and native_prov != 'بدون تعهدی') else "بدون کدرشته‌های تعهدی"
+    format_label = "نسخه کامل (همراه با ستون‌های نمره‌دهی)" if include_scores else "نسخه ساده (بدون ستون‌های نمره‌دهی)"
+    
+    meta_p1 = f"سهمیه: {reg_title}  |  رتبه در سهمیه: {rank:,}  |  بازه تحلیلی: {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})"
+    meta_p2 = f"وضعیت تعهد خدمت: {tahad_status}  |  تعداد کدرشته‌های استخراج‌شده: {len(filtered):,} رشته‌محل  |  قالب گزارش: {format_label}"
+
+    meta_style = ParagraphStyle(
+        'MetaStyle2',
+        fontName=PDF_FONT_NAME,
+        fontSize=7.5,
+        leading=10,
+        alignment=1,
+        textColor=colors.HexColor('#222222')
+    )
+    meta_table = Table(
+        [
+            [Paragraph(fa_text(meta_p1), meta_style)],
+            [Paragraph(fa_text(meta_p2), meta_style)]
+        ],
+        colWidths=[800]
+    )
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F2F5F9')),
+        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#B0C4DE')),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 5))
+
+    style_h = ParagraphStyle('Head2', fontName=PDF_FONT_NAME, fontSize=7.5, leading=9.5, alignment=1, textColor=colors.white)
+    style_banner = ParagraphStyle('Banner2', fontName=PDF_FONT_NAME, fontSize=8, leading=10, alignment=2, textColor=colors.white)
+    style_cell_c = ParagraphStyle('CellC2', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#111111'))
+    style_cell_r = ParagraphStyle('CellR2', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=2, textColor=colors.HexColor('#111111'))
+    style_cell_bold = ParagraphStyle('CellB2', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#002060'))
+
+    if include_scores:
+        headers = [
+            'منبع و سال', 'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
+            'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان', 'رتبه در سهمیه',
+            'دانشگاه قبولی', 'رشته قبولی', 'اولویت کل', 'اولویت رشته'
+        ]
+        col_widths = [65, 32, 32, 32, 42, 42, 65, 55, 45, 45, 155, 105, 42, 43]
+    else:
+        headers = [
+            'منبع و سال', 'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
+            'رتبه در سهمیه', 'دانشگاه قبولی', 'رشته قبولی', 'اولویت کل', 'اولویت رشته'
+        ]
+        col_widths = [80, 50, 80, 65, 60, 60, 195, 130, 40, 40]
+
+    num_cols = len(headers)
+    table_data = []
+    table_data.append([Paragraph(fa_text(h), style_h) for h in headers])
+
+    ts = [
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#002060')),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 1.5),
+        ('TOPPADDING', (0,0), (-1,-1), 1.5),
+        ('LEFTPADDING', (0,0), (-1,-1), 2),
+        ('RIGHTPADDING', (0,0), (-1,-1), 2),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#D9D9D9')),
+    ]
+
+    # دسته‌بندی رکوردها بر اساس گروه رشته
+    grouped_rows = {}
+    for _, r in filtered.iterrows():
+        m_name = r.get('گروه_رشته', r['رشته قبولی'])
+        if m_name not in grouped_rows:
+            grouped_rows[m_name] = []
+        grouped_rows[m_name].append(r)
+
+    major_order = selected_majors if (selected_majors and 'همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else ALL_TARGET_MAJORS
+    ordered_keys = []
+    for mo in major_order:
+        if mo in grouped_rows and mo not in ordered_keys:
+            ordered_keys.append(mo)
+    for k in grouped_rows:
+        if k not in ordered_keys:
+            ordered_keys.append(k)
+
+    for major_name in ordered_keys:
+        rows_in_major = grouped_rows[major_name]
+        rows_in_major.sort(key=lambda x: (-x['امتیاز_کل'], -x['نمره_استان'], x['رتبه در سهمیه']))
+
+        banner_row_idx = len(table_data)
+        banner_text = f"📌 کدرشته‌های قبولی: {major_name} (شامل {len(rows_in_major):,} کدرشته‌محل — مرتب‌شده بر اساس بالاترین امتیاز)"
+        banner_p = Paragraph(fa_text(banner_text), style_banner)
+        table_data.append([banner_p] + [''] * (num_cols - 1))
+        ts.append(('SPAN', (0, banner_row_idx), (-1, banner_row_idx)))
+        ts.append(('BACKGROUND', (0, banner_row_idx), (-1, banner_row_idx), colors.HexColor('#1F497D')))
+
+        for in_major_idx, r in enumerate(rows_in_major, 1):
+            curr_row_idx = len(table_data)
+            r_val = int(r['رتبه در سهمیه'])
+            chance_text = get_chance_text(r_val, rank, opt_p, pess_p)
+            r_keshvari_val = r.get('رتبه کشوری', '-')
+            if str(r_keshvari_val).isdigit() and int(r_keshvari_val) > 0:
+                k_disp = f"{int(r_keshvari_val):,}"
+            else:
+                k_disp = str(r_keshvari_val)
+
+            if include_scores:
+                row = [
+                    Paragraph(fa_text(str(r.get('منبع', '-'))[:35], wrap_width=16), style_cell_c),
+                    Paragraph(fa_text(f"{float(r.get('ضریب_دوره', 1.0)):.2f}"), style_cell_c),
+                    Paragraph(fa_text(f"{float(r.get('نمره_استان', 5.0)):.1f}"), style_cell_c),
+                    Paragraph(fa_text(f"{float(r.get('نمره_رشته', 5.0)):.1f}"), style_cell_c),
+                    Paragraph(fa_text(f"{float(r.get('امتیاز_کل', 0.0)):.2f}"), style_cell_bold),
+                    Paragraph(fa_text(k_disp), style_cell_c),
+                    Paragraph(fa_text(chance_text), style_cell_c),
+                    Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
+                    Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
+                    Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
+                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=24), style_cell_r),
+                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=16), style_cell_r),
+                    Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold),
+                    Paragraph(fa_text(str(in_major_idx)), style_cell_bold)
+                ]
+            else:
+                row = [
+                    Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=18), style_cell_c),
+                    Paragraph(fa_text(k_disp), style_cell_c),
+                    Paragraph(fa_text(chance_text), style_cell_c),
+                    Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
+                    Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
+                    Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
+                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=28), style_cell_r),
+                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=20), style_cell_r),
+                    Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold),
+                    Paragraph(fa_text(str(in_major_idx)), style_cell_bold)
+                ]
+            table_data.append(row)
+            is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
+            if is_row_tahad:
+                ts.append(('BACKGROUND', (0, curr_row_idx), (-1, curr_row_idx), colors.HexColor('#FFF2CC')))
+            elif in_major_idx % 2 == 1:
+                ts.append(('BACKGROUND', (0, curr_row_idx), (-1, curr_row_idx), colors.HexColor('#F2F5F9')))
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle(ts))
+    story.append(t)
+
+    # باکس یادآوری کدرشته‌های تعهد خدمت
+    if native_prov and native_prov != 'بدون تعهدی':
+        story.append(Spacer(1, 6))
+        warn_style = ParagraphStyle(
+            'Warn2',
+            fontName=PDF_FONT_NAME,
+            fontSize=7.5,
+            leading=10,
+            alignment=1,
+            textColor=colors.HexColor('#9C6500')
+        )
+        warn_msg = (
+            f"💡 یادآوری مهم مشاور درباره کدرشته‌های تعهد خدمت استان {native_prov}: "
+            f"کدرشته‌های تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی) منحصراً متعلق به داوطلبان بومی استان {native_prov} است. "
+            f"با توجه به متغیر بودن ظرفیت‌ها در هر سال، حتماً کدرشته‌های تعهدی دانشگاه‌های علوم پزشکی استان خود را در دفترچه انتخاب رشته امسال بررسی و در لیست نهایی درج فرمایید."
+        )
+        warn_table = Table([[Paragraph(fa_text(warn_msg), warn_style)]], colWidths=[800])
+        warn_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#FFF2CC')),
+            ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#E0B86C')),
+            ('TOPPADDING', (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ]))
+        story.append(warn_table)
+
+    doc.build(story, canvasmaker=NumberedCanvas)
+    buf.seek(0)
+    return buf
+
+def send_pdf_results(chat_id):
+    state = user_state.get(chat_id, {})
+    filtered = state.get('last_filtered')
+    if filtered is None or filtered.empty:
+        bot.send_message(chat_id, "⚠️ داده‌ای برای تولید PDF یافت نشد. لطفاً ابتدا یک استعلام انجام دهید.")
+        return
+        
+    rank = state.get('rank', 5000)
+    region = state.get('region', 2)
+    reg_title = f"منطقه {region}" if region in [1, 2, 3] else "سهمیه ۵ درصد ایثارگران"
+    opt_p = state.get('opt_pct', 30)
+    pess_p = state.get('pess_pct', 25)
+    native_prov = state.get('native_province', None)
+    selected_majors = state.get('selected_majors', ['همه رشته‌ها'])
+    include_scores = state.get('include_scores', True)
+    clean_reg_name = reg_title.replace(' ', '_')
+    total_count = len(filtered)
+    format_label = "📊 نسخه کامل (همراه با ستون‌های نمره‌دهی و فرمول)" if include_scores else "📋 نسخه ساده (بدون ستون‌های نمره‌دهی)"
+
+    status_msg = bot.send_message(chat_id, "⏳ در حال ساخت فایل‌های PDF با چیدمان افقی A4 و فونت پینار... لطفاً چند لحظه شکیبا باشید.")
+    
+    try:
+        # فایل PDF ۱: اولویت‌بندی کلی
+        file_title_pdf1 = f"۱_اولویت_بندی_انتخاب_رشته_رتبه_{rank}_{clean_reg_name}.pdf"
+        buf_pdf1 = build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
+        
+        bot.send_document(
+            chat_id,
+            buf_pdf1,
+            visible_file_name=file_title_pdf1,
+            caption=(
+                f"📄 **نسخه چاپی PDF (فایل اول: اولویت‌بندی کلی)**\n\n"
+                f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+                f"📐 **چیدمان:** افقی (Landscape A4) مناسب پرینت مستقیم\n"
+                f"🖋 **فونت:** پینار (Pinar) خوانا و استاندارد\n"
+                f"⚙️ **قالب:** {format_label}"
+            ),
+            parse_mode='Markdown'
+        )
+
+        # فایل PDF ۲: تفکیک بر اساس رشته
+        file_title_pdf2 = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.pdf"
+        buf_pdf2 = build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
+
+        bot.send_document(
+            chat_id,
+            buf_pdf2,
+            visible_file_name=file_title_pdf2,
+            caption=(
+                f"📄 **نسخه چاپی PDF (فایل دوم: تفکیک بر اساس رشته)**\n\n"
+                f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+                f"📐 **چیدمان:** افقی (Landscape A4) با بنرهای تفکیک هر رشته\n"
+                f"🖋 **فونت:** پینار (Pinar) خوانا و استاندارد\n"
+                f"⚙️ **قالب:** {format_label}"
+            ),
+            parse_mode='Markdown'
+        )
+        
+        try:
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception:
+            pass
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ خطا در تولید فایل PDF: {e}")
+
+# =====================================================================
 # 🔍 مرحله محاسباتی، شکستن تساوی و تولید دو فایل اکسل خروجی
 # =====================================================================
 def execute_search_and_send(chat_id):
@@ -1706,6 +2344,7 @@ def execute_search_and_send(chat_id):
     reg_title = f"منطقه {region}" if region in [1, 2, 3] else "سهمیه ۵ درصد ایثارگران"
     opt_p = state.get('opt_pct', 30)
     pess_p = state.get('pess_pct', 25)
+    selected_sources = state.get('selected_sources', [])
     src_filter = state.get('source', 'همه')
     src_label = state.get('source_label', '🌐 همه با هم')
     selected_majors = state.get('selected_majors', ['همه رشته‌ها'])
@@ -1716,19 +2355,26 @@ def execute_search_and_send(chat_id):
     min_rank = max(1, int(rank * (1 - opt_p / 100.0)))
     max_rank = int(rank * (1 + pess_p / 100.0))
     
-    sub_df = df.copy()
-    if region == 5:
-        # در سهمیه ۵ درصد، داده‌ها مربوط به منبع سهمیه ۵ درصد هستند
-        sub_df = sub_df[sub_df['سهمیه'] == 5].copy()
+    # فیلتر پایگاه داده (تک‌منبع یا چندمنبع همزمان)
+    if not selected_sources or 'all' in selected_sources or len(selected_sources) == len(AVAILABLE_SOURCES):
+        if region == 5:
+            sub_df = df[df['سهمیه'] == 5].copy()
+        else:
+            sub_df = df.copy()
     else:
-        if src_filter == '۱۴۰۴':
-            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('1404', na=False) & ~sub_df['منبع'].astype(str).str.contains('5 درصد|۵ درصد', na=False)]
-        elif src_filter == '۱۴۰۳':
-            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('1403', na=False)]
-        elif src_filter == '۵درصد':
-            sub_df = sub_df[sub_df['سهمیه'] == region]
-        elif src_filter == 'سنجش':
-            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('سنجش|جامع', na=False)]
+        cond_src = pd.Series(False, index=df.index)
+        for k in selected_sources:
+            if k == '1404' or k == '۱۴۰۴':
+                cond_src = cond_src | (df['منبع'].astype(str).str.contains('1404', na=False) & ~df['منبع'].astype(str).str.contains('5 درصد|۵ درصد', na=False))
+            elif k == '1403' or k == '۱۴۰۳':
+                cond_src = cond_src | df['منبع'].astype(str).str.contains('1403', na=False)
+            elif k == '5pct' or k == '۵درصد':
+                cond_src = cond_src | (df['سهمیه'] == 5)
+            elif k == 'sanjesh' or k == 'سنجش':
+                cond_src = cond_src | df['منبع'].astype(str).str.contains('سنجش|جامع', na=False)
+            elif k == 'mehromaah' or k == 'مهروماه':
+                cond_src = cond_src | df['منبع'].astype(str).str.contains('مهر و ماه|مهروماه', na=False)
+        sub_df = df[cond_src].copy()
 
     filtered = sub_df[
         (sub_df['سهمیه'] == region) & 
@@ -1836,11 +2482,14 @@ def execute_search_and_send(chat_id):
     majors_disp = "، ".join(selected_majors[:4]) + (f" و {to_persian_num(len(selected_majors)-4)} مورد دیگر" if len(selected_majors) > 4 else "")
     provs_disp = "، ".join(selected_provinces[:4]) + (f" و {to_persian_num(len(selected_provinces)-4)} مورد دیگر" if len(selected_provinces) > 4 else "")
     
-    include_scores = state.get('include_scores', True)
+    export_pdf = state.get('export_pdf', False)
     format_label = "📊 نسخه کامل (همراه با ستون‌های نمره‌دهی و فرمول)" if include_scores else "📋 نسخه ساده (بدون ستون‌های نمره‌دهی)"
     
+    # ذخیره در state کاربر برای امکان دانلود مستقیم PDF در هر لحظه
+    user_state[chat_id]['last_filtered'] = filtered.copy()
+
     # -------------------------------------------------------------
-    # 💬 پیام خلاصه نهایی (بدون اسپم و بدون ارسال پیام‌های تکی کارنامه‌ها)
+    # 💬 پیام خلاصه نهایی
     # -------------------------------------------------------------
     summary_msg = (
         f"🎯 **محاسبات اولویت‌بندی انتخاب رشته تجربی با موفقیت انجام شد!**\n\n"
@@ -1850,10 +2499,10 @@ def execute_search_and_send(chat_id):
         f"🎓 **رشته‌های انتخابی:** {majors_disp}\n"
         f"🗺 **استان‌های انتخابی:** {provs_disp}\n"
         f"🏥 **وضعیت تعهد خدمت:** {'بومی ' + native_prov if (native_prov and native_prov != 'بدون تعهدی') else 'بدون کدرشته‌های تعهدی'}\n"
-        f"⚙️ **قالب فایل‌های اکسل:** {format_label}\n"
+        f"⚙️ **قالب گزارش‌ها:** {format_label}\n"
         f"📌 **تعداد کل کدرشته‌محل‌های یافت‌شده:** **{total_count:,} رشته‌محل**\n\n"
         f"⚖️ **فرمول رتبه‌بندی:** `(نمره رشته × ۱.۲ + نمره شهر × ۱.۰) × ضریب دوره`\n\n"
-        f"📁 **دو فایل اکسل اختصاصی آماده پرینت و انتخاب رشته در ادامه ارسال می‌گردد:**\n"
+        f"📁 **فایل‌های اکسل و PDF اختصاصی آماده پرینت در ادامه ارسال می‌گردد:**\n"
         f"  1️⃣ **فایل ۱ (اولویت‌بندی کلی):** چیدمان از بالاترین امتیاز به پایین‌ترین شانس\n"
         f"  2️⃣ **فایل ۲ (تفکیک رشته‌ها):** چیدمان موضوعی پشت‌سرهم (همه پرستاری‌ها پشت هم، همه پزشکی‌ها پشت هم و...) به همراه اولویت درون‌رشته‌ای"
     )
@@ -1896,9 +2545,10 @@ def execute_search_and_send(chat_id):
         buf_prio, 
         visible_file_name=file_title_prio, 
         caption=(
-            f"📁 **فایل اول: اولویت‌بندی کلی بر اساس امتیاز و شانس قبولی**\n\n"
+            f"📁 **فایل اکسل اول: اولویت‌بندی کلی بر اساس امتیاز و شانس قبولی**\n\n"
             f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
             f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره.\n"
+            f"🖋 فونت: پینار (Pinar)\n"
             f"⚙️ **قالب:** {format_label}"
         ),
         parse_mode='Markdown'
@@ -1910,23 +2560,40 @@ def execute_search_and_send(chat_id):
     file_title_major = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
     buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
     
-    restart_markup = types.InlineKeyboardMarkup()
-    restart_markup.add(types.InlineKeyboardButton("🔄 استعلام جدید", callback_data="restart"))
-    
     bot.send_document(
         chat_id, 
         buf_major, 
         visible_file_name=file_title_major, 
         caption=(
-            f"📁 **فایل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
+            f"📁 **فایل اکسل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
             f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
             f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای.\n"
+            f"🖋 فونت: پینار (Pinar)\n"
             f"⚙️ **قالب:** {format_label}"
         ),
         parse_mode='Markdown'
     )
     
-    bot.send_message(chat_id, "💡 برای استعلام رتبه یا اولویت‌های دیگر، دکمه زیر را لمس فرمایید:", reply_markup=restart_markup)
+    # -------------------------------------------------------------
+    # 📄 ارسال فایل‌های PDF چاپی (در صورت درخواست در منو)
+    # -------------------------------------------------------------
+    if export_pdf:
+        send_pdf_results(chat_id)
+        
+    action_markup = types.InlineKeyboardMarkup(row_width=1)
+    if not export_pdf:
+        action_markup.add(types.InlineKeyboardButton("📄 دریافت هر دو فایل به صورت PDF چاپی (افقی A4)", callback_data="dl_pdf_both"))
+    action_markup.add(types.InlineKeyboardButton("🔄 استعلام جدید", callback_data="restart"))
+    
+    bot.send_message(chat_id, "💡 برای دریافت نسخه چاپی PDF یا استعلام جدید، گزینه‌های زیر را لمس فرمایید:", reply_markup=action_markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "dl_pdf_both")
+def callback_dl_pdf_both(call):
+    chat_id = call.message.chat.id
+    if not is_authenticated(chat_id):
+        save_auth_user(chat_id)
+    bot.answer_callback_query(call.id, "در حال تولید فایل‌های PDF چاپی...")
+    send_pdf_results(chat_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "restart")
 def callback_restart(call):
@@ -1944,7 +2611,8 @@ def callback_restart(call):
         'selected_provinces': [],
         'prov_scores': {},
         'native_province': None,
-        'include_scores': True
+        'include_scores': True,
+        'selected_sources': []
     }
     bot.answer_callback_query(call.id, "شروع مجدد")
     bot.send_message(
