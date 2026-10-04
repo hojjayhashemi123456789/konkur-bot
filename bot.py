@@ -667,7 +667,8 @@ def send_welcome(message):
         'major_scores': {},
         'selected_provinces': [],
         'prov_scores': {},
-        'native_province': None
+        'native_province': None,
+        'include_scores': True
     }
     
     welcome_text = (
@@ -1064,7 +1065,7 @@ def callback_province_action(call):
         user_state[chat_id]['selected_provinces'] = ['سراسر کشور']
         user_state[chat_id]['prov_scores'] = {}
         bot.answer_callback_query(call.id, "سراسر کشور انتخاب شد.")
-        execute_search_and_send(chat_id)
+        proceed_to_score_columns_prompt(chat_id, message_id=call.message.message_id)
         return
     elif action == 'clear':
         user_state[chat_id]['selected_provinces'] = []
@@ -1075,8 +1076,8 @@ def callback_province_action(call):
     elif action == 'confirm':
         if not selected:
             user_state[chat_id]['selected_provinces'] = ['سراسر کشور']
-        bot.answer_callback_query(call.id, "در حال محاسبه امتیازات...")
-        execute_search_and_send(chat_id)
+        bot.answer_callback_query(call.id, "تنظیمات گزارش خروجی...")
+        proceed_to_score_columns_prompt(chat_id, message_id=call.message.message_id)
         return
     elif action.startswith('toggle_'):
         idx = int(action.split('_')[1])
@@ -1090,6 +1091,55 @@ def callback_province_action(call):
         user_state[chat_id]['selected_provinces'] = selected
         user_state[chat_id]['prov_scores'] = {}
         send_provinces_selection_prompt(chat_id, message_id=call.message.message_id)
+
+# =====================================================================
+# ⚙️ مرحله انتخاب فعال بودن ستون‌های امتیازدهی در فایل خروجی
+# =====================================================================
+def proceed_to_score_columns_prompt(chat_id, message_id=None):
+    user_state[chat_id]['step'] = 'select_score_columns'
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_yes = types.InlineKeyboardButton("📊 نسخه کامل (همراه با ستون‌های نمره‌دهی و فرمول)", callback_data="scoreopt_yes")
+    btn_no = types.InlineKeyboardButton("📋 نسخه ساده (بدون ستون‌های نمره‌دهی - ساده و روان)", callback_data="scoreopt_no")
+    markup.add(btn_yes, btn_no)
+    
+    msg_text = (
+        "⚙️ **تنظیمات نهایی فایل‌های اکسل خروجی:**\n\n"
+        "آیا مایلید ستون‌های نمره‌دهی و محاسباتی (شامل امتیاز کل، نمره رشته، نمره شهر و ضریب دوره) در فایل‌های اکسل درج شوند؟\n\n"
+        "▫️ **📊 نسخه کامل:** نمایش تمام ستون‌های محاسباتی، نمرات ۱ تا ۱۰ رشته و شهر، ضریب دوره و امتیاز نهایی فرمول.\n"
+        "▫️ **📋 نسخه ساده:** فایل تمیز، شیک و بدون ستون‌های نمره‌دهی (شامل رشته، دانشگاه، رتبه قبولی، استان، دوره، شانس قبولی و رتبه کشوری).\n\n"
+        "💡 *در هر دو حالت، کدرشته‌ها بر اساس بالاترین اولویت و شانس دقیق شما چینش می‌شوند.*"
+    )
+    
+    if message_id:
+        try:
+            bot.edit_message_text(msg_text, chat_id=chat_id, message_id=message_id, parse_mode='Markdown', reply_markup=markup)
+            return
+        except Exception as e:
+            if 'message is not modified' in str(e).lower():
+                return
+            try:
+                bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=markup)
+                return
+            except Exception:
+                pass
+    bot.send_message(chat_id, msg_text, parse_mode='Markdown', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('scoreopt_'))
+def callback_score_option(call):
+    chat_id = call.message.chat.id
+    if not is_authenticated(chat_id):
+        save_auth_user(chat_id)
+        
+    choice = call.data.split('_')[1]
+    if choice == 'yes':
+        user_state[chat_id]['include_scores'] = True
+        bot.answer_callback_query(call.id, "نسخه با ستون‌های نمره‌دهی انتخاب شد.")
+    else:
+        user_state[chat_id]['include_scores'] = False
+        bot.answer_callback_query(call.id, "نسخه ساده بدون نمره‌دهی انتخاب شد.")
+        
+    execute_search_and_send(chat_id)
 
 # =====================================================================
 # ✍️ هندلر ورودی‌های متنی چت (Password, Rank, Percentages, Majors, Provinces)
@@ -1128,6 +1178,8 @@ def text_input_handler(message):
                 proceed_to_native_province_step(chat_id)
             elif current_step == 'select_provinces':
                 send_provinces_selection_prompt(chat_id)
+            elif current_step == 'select_score_columns':
+                proceed_to_score_columns_prompt(chat_id)
             return
         else:
             bot.send_message(
@@ -1151,7 +1203,8 @@ def text_input_handler(message):
     if chat_id not in user_state:
         user_state[chat_id] = {
             'step': 'select_region', 'opt_pct': 30, 'pess_pct': 25,
-            'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}
+            'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {},
+            'include_scores': True
         }
         
     step = user_state[chat_id].get('step', 'select_region')
@@ -1250,11 +1303,29 @@ def text_input_handler(message):
             user_state[chat_id]['prov_scores'] = manual_p_sc
             p_str = "، ".join(parsed_p)
             bot.send_message(chat_id, f"✅ **{to_persian_num(len(parsed_p))} استان بر اساس اولویت ارسالی شما ثبت شد:**\n{p_str}")
-            execute_search_and_send(chat_id)
+            proceed_to_score_columns_prompt(chat_id)
             return
         else:
             bot.send_message(chat_id, "⚠️ استانی از متن شما شناسایی نشد. لطفاً از دکمه‌های زیر انتخاب فرمایید:")
             send_provinces_selection_prompt(chat_id)
+            return
+
+    # 6. انتخاب ستون‌های امتیازدهی در چت
+    if step == 'select_score_columns':
+        t_low = text.lower()
+        if any(w in t_low for w in ['بله', 'کامل', 'امتیاز', 'با امتیاز', '۱', '1', 'اره', 'آره', 'yes', 'y']):
+            user_state[chat_id]['include_scores'] = True
+            bot.send_message(chat_id, "✅ گزارش همراه با ستون‌های نمره‌دهی انتخاب شد.")
+            execute_search_and_send(chat_id)
+            return
+        elif any(w in t_low for w in ['خیر', 'نه', 'ساده', 'بدون', 'بدون امتیاز', '۲', '2', 'no', 'n']):
+            user_state[chat_id]['include_scores'] = False
+            bot.send_message(chat_id, "✅ گزارش ساده بدون ستون‌های نمره‌دهی انتخاب شد.")
+            execute_search_and_send(chat_id)
+            return
+        else:
+            bot.send_message(chat_id, "⚠️ لطفاً یکی از گزینه‌های زیر را لمس فرمایید:")
+            proceed_to_score_columns_prompt(chat_id)
             return
             
     bot.send_message(chat_id, "💡 برای شروع استعلام انتخاب رشته، دستور /start را ارسال فرمایید.")
@@ -1349,7 +1420,7 @@ def add_native_checklist_sheet(wb, filtered, selected_majors, native_prov):
         col_letter = get_column_letter(col[0].column)
         ws2.column_dimensions[col_letter].width = max(max_l + 3, 14)
 
-def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors):
+def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
     font_name = 'B Nazanin'
     h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
@@ -1371,11 +1442,15 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
     ws.title = "اولویت‌بندی بر اساس امتیاز"
     ws.views.sheetView[0].rightToLeft = True
 
+    # ترتیب ستون‌ها: اولویت پیشنهادی -> رشته قبولی -> دانشگاه قبولی -> رتبه در سهمیه -> استان -> دوره تحصیلی -> شانس قبولی -> رتبه کشوری -> (امتیازها) -> منبع و سال
     headers = [
-        'اولویت پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی', 'استان', 'دوره تحصیلی',
-        'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره',
-        'رتبه در سهمیه', 'رتبه کشوری', 'منبع و سال', 'ارزیابی شانس'
+        'اولویت پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی',
+        'رتبه در سهمیه', 'استان', 'دوره تحصیلی', 'شانس قبولی', 'رتبه کشوری'
     ]
+    if include_scores:
+        headers.extend(['امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره'])
+    headers.append('منبع و سال')
+
     ws.append(headers)
     ws.row_dimensions[1].height = 28
 
@@ -1393,17 +1468,21 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
             r['ترتیب_اولویت'],
             r['رشته قبولی'],
             r['دانشگاه قبولی'],
+            r_val,
             r['استان'],
             r.get('دوره_تطبیقی', r.get('دوره', '-')),
-            r['امتیاز_کل'],
-            r['نمره_رشته'],
-            r['نمره_استان'],
-            r['ضریب_دوره'],
-            r_val,
-            r.get('رتبه کشوری', '-'),
-            r.get('منبع', '-'),
-            chance_text
+            chance_text,
+            r.get('رتبه کشوری', '-')
         ]
+        if include_scores:
+            row_data.extend([
+                r['امتیاز_کل'],
+                r['نمره_رشته'],
+                r['نمره_استان'],
+                r['ضریب_دوره']
+            ])
+        row_data.append(r.get('منبع', '-'))
+
         ws.append(row_data)
         ws.row_dimensions[r_idx].height = 22
         is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
@@ -1411,20 +1490,25 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
 
         for col_idx, val in enumerate(row_data, 1):
             cell = ws.cell(row=r_idx, column=col_idx)
-            cell.font = d_bold_font if col_idx in [1, 6] else d_font
+            h_name = headers[col_idx - 1]
+            
+            is_bold = (h_name in ['اولویت پیشنهادی', 'رتبه در سهمیه', 'امتیاز کل اولویت'])
+            cell.font = d_bold_font if is_bold else d_font
             cell.border = t_border
             if fill:
                 cell.fill = fill
-            h_name = headers[col_idx - 1]
-            if h_name in ['اولویت پیشنهادی', 'استان', 'دوره تحصیلی', 'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره', 'رتبه در سهمیه', 'رتبه کشوری', 'ارزیابی شانس']:
-                cell.alignment = al_center
-                if isinstance(val, (int, float)) and val > 0:
-                    if isinstance(val, float):
-                        cell.number_format = '0.00'
-                    else:
-                        cell.number_format = '#,##0'
-            else:
+                
+            if h_name in ['رشته قبولی', 'دانشگاه قبولی']:
                 cell.alignment = al_right
+            else:
+                cell.alignment = al_center
+
+            if h_name in ['اولویت پیشنهادی', 'رتبه در سهمیه', 'رتبه کشوری']:
+                if isinstance(val, (int, float)) and val > 0:
+                    cell.number_format = '#,##0'
+            elif h_name in ['امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره']:
+                if isinstance(val, (int, float)) and val > 0:
+                    cell.number_format = '0.00'
 
     if native_prov and native_prov != 'بدون تعهدی':
         ws.append([])
@@ -1443,8 +1527,13 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
         ws.row_dimensions[b_idx].height = 42
 
     for col in ws.columns:
-        max_l = max(len(str(cell.value or '')) for cell in col)
         col_letter = get_column_letter(col[0].column)
+        cell_lengths = []
+        for cell in col:
+            val_str = str(cell.value or '')
+            if len(val_str) < 55:
+                cell_lengths.append(len(val_str))
+        max_l = max(cell_lengths) if cell_lengths else 10
         ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
 
     add_native_checklist_sheet(wb, filtered, selected_majors, native_prov)
@@ -1454,7 +1543,7 @@ def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_titl
     buf.seek(0)
     return buf
 
-def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors):
+def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=True):
     font_name = 'B Nazanin'
     h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
     h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
@@ -1478,11 +1567,15 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
     ws.title = "تفکیک بر اساس رشته"
     ws.views.sheetView[0].rightToLeft = True
 
+    # ترتیب ستون‌ها: اولویت در رشته -> اولویت کل پیشنهادی -> رشته قبولی -> دانشگاه قبولی -> رتبه در سهمیه -> استان -> دوره تحصیلی -> شانس قبولی -> رتبه کشوری -> (امتیازها) -> منبع و سال
     headers = [
-        'اولویت در رشته', 'اولویت کل پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی', 'استان', 'دوره تحصیلی',
-        'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره',
-        'رتبه در سهمیه', 'رتبه کشوری', 'منبع و سال', 'ارزیابی شانس'
+        'اولویت در رشته', 'اولویت کل پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی',
+        'رتبه در سهمیه', 'استان', 'دوره تحصیلی', 'شانس قبولی', 'رتبه کشوری'
     ]
+    if include_scores:
+        headers.extend(['امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره'])
+    headers.append('منبع و سال')
+
     ws.append(headers)
     ws.row_dimensions[1].height = 28
 
@@ -1537,17 +1630,21 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
                 r['ترتیب_اولویت'],
                 r['رشته قبولی'],
                 r['دانشگاه قبولی'],
+                r_val,
                 r['استان'],
                 r.get('دوره_تطبیقی', r.get('دوره', '-')),
-                r['امتیاز_کل'],
-                r['نمره_رشته'],
-                r['نمره_استان'],
-                r['ضریب_دوره'],
-                r_val,
-                r.get('رتبه کشوری', '-'),
-                r.get('منبع', '-'),
-                chance_text
+                chance_text,
+                r.get('رتبه کشوری', '-')
             ]
+            if include_scores:
+                row_data.extend([
+                    r['امتیاز_کل'],
+                    r['نمره_رشته'],
+                    r['نمره_استان'],
+                    r['ضریب_دوره']
+                ])
+            row_data.append(r.get('منبع', '-'))
+
             ws.append(row_data)
             ws.row_dimensions[current_row_idx].height = 22
             is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
@@ -1555,20 +1652,26 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
 
             for col_idx, val in enumerate(row_data, 1):
                 cell = ws.cell(row=current_row_idx, column=col_idx)
-                cell.font = d_bold_font if col_idx in [1, 2, 7] else d_font
+                h_name = headers[col_idx - 1]
+
+                is_bold = (h_name in ['اولویت در رشته', 'اولویت کل پیشنهادی', 'رتبه در سهمیه', 'امتیاز کل اولویت'])
+                cell.font = d_bold_font if is_bold else d_font
                 cell.border = t_border
                 if fill:
                     cell.fill = fill
-                h_name = headers[col_idx - 1]
-                if h_name in ['اولویت در رشته', 'اولویت کل پیشنهادی', 'استان', 'دوره تحصیلی', 'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره', 'رتبه در سهمیه', 'رتبه کشوری', 'ارزیابی شانس']:
-                    cell.alignment = al_center
-                    if isinstance(val, (int, float)) and val > 0:
-                        if isinstance(val, float):
-                            cell.number_format = '0.00'
-                        else:
-                            cell.number_format = '#,##0'
-                else:
+
+                if h_name in ['رشته قبولی', 'دانشگاه قبولی']:
                     cell.alignment = al_right
+                else:
+                    cell.alignment = al_center
+
+                if h_name in ['اولویت در رشته', 'اولویت کل پیشنهادی', 'رتبه در سهمیه', 'رتبه کشوری']:
+                    if isinstance(val, (int, float)) and val > 0:
+                        cell.number_format = '#,##0'
+                elif h_name in ['امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره']:
+                    if isinstance(val, (int, float)) and val > 0:
+                        cell.number_format = '0.00'
+
             current_row_idx += 1
 
         # ردیف فاصله ظریف بین گروه‌های رشته
@@ -1577,8 +1680,13 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
         current_row_idx += 1
 
     for col in ws.columns:
-        max_l = max(len(str(cell.value or '')) for cell in col)
         col_letter = get_column_letter(col[0].column)
+        cell_lengths = []
+        for cell in col:
+            val_str = str(cell.value or '')
+            if len(val_str) < 55:
+                cell_lengths.append(len(val_str))
+        max_l = max(cell_lengths) if cell_lengths else 10
         ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
 
     add_native_checklist_sheet(wb, filtered, selected_majors, native_prov)
@@ -1728,6 +1836,9 @@ def execute_search_and_send(chat_id):
     majors_disp = "، ".join(selected_majors[:4]) + (f" و {to_persian_num(len(selected_majors)-4)} مورد دیگر" if len(selected_majors) > 4 else "")
     provs_disp = "، ".join(selected_provinces[:4]) + (f" و {to_persian_num(len(selected_provinces)-4)} مورد دیگر" if len(selected_provinces) > 4 else "")
     
+    include_scores = state.get('include_scores', True)
+    format_label = "📊 نسخه کامل (همراه با ستون‌های نمره‌دهی و فرمول)" if include_scores else "📋 نسخه ساده (بدون ستون‌های نمره‌دهی)"
+    
     # -------------------------------------------------------------
     # 💬 پیام خلاصه نهایی (بدون اسپم و بدون ارسال پیام‌های تکی کارنامه‌ها)
     # -------------------------------------------------------------
@@ -1739,6 +1850,7 @@ def execute_search_and_send(chat_id):
         f"🎓 **رشته‌های انتخابی:** {majors_disp}\n"
         f"🗺 **استان‌های انتخابی:** {provs_disp}\n"
         f"🏥 **وضعیت تعهد خدمت:** {'بومی ' + native_prov if (native_prov and native_prov != 'بدون تعهدی') else 'بدون کدرشته‌های تعهدی'}\n"
+        f"⚙️ **قالب فایل‌های اکسل:** {format_label}\n"
         f"📌 **تعداد کل کدرشته‌محل‌های یافت‌شده:** **{total_count:,} رشته‌محل**\n\n"
         f"⚖️ **فرمول رتبه‌بندی:** `(نمره رشته × ۱.۲ + نمره شهر × ۱.۰) × ضریب دوره`\n\n"
         f"📁 **دو فایل اکسل اختصاصی آماده پرینت و انتخاب رشته در ادامه ارسال می‌گردد:**\n"
@@ -1776,17 +1888,18 @@ def execute_search_and_send(chat_id):
     # 📑 تولید و ارسال فایل اکسل ۱: اولویت‌بندی بر اساس امتیاز کل
     # -------------------------------------------------------------
     clean_reg_name = reg_title.replace(' ', '_')
-    file_title_prio = f"۱_اولویت_بندی_بر_اساس_امتیاز_رتبه_{rank}_{clean_reg_name}.xlsx"
-    buf_prio = build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors)
+    file_title_prio = f"۱_اولویت_بندی_بر_اساس_امتیاز_رتبه_{rank}_{clean_reg_name}.xlsx" if include_scores else f"۱_اولویت_بندی_انتخاب_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
+    buf_prio = build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
     
     bot.send_document(
         chat_id, 
         buf_prio, 
         visible_file_name=file_title_prio, 
         caption=(
-            f"📁 **فایل اول: اولویت‌بندی کلی بر اساس امتیاز**\n\n"
+            f"📁 **فایل اول: اولویت‌بندی کلی بر اساس امتیاز و شانس قبولی**\n\n"
             f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
-            f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره."
+            f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره.\n"
+            f"⚙️ **قالب:** {format_label}"
         ),
         parse_mode='Markdown'
     )
@@ -1795,7 +1908,7 @@ def execute_search_and_send(chat_id):
     # 📑 تولید و ارسال فایل اکسل ۲: تفکیک بر اساس رشته‌ها پشت‌سرهم
     # -------------------------------------------------------------
     file_title_major = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
-    buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors)
+    buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors, include_scores=include_scores)
     
     restart_markup = types.InlineKeyboardMarkup()
     restart_markup.add(types.InlineKeyboardButton("🔄 استعلام جدید", callback_data="restart"))
@@ -1807,7 +1920,8 @@ def execute_search_and_send(chat_id):
         caption=(
             f"📁 **فایل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
             f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
-            f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای."
+            f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای.\n"
+            f"⚙️ **قالب:** {format_label}"
         ),
         parse_mode='Markdown'
     )
@@ -1829,7 +1943,8 @@ def callback_restart(call):
         'major_scores': {},
         'selected_provinces': [],
         'prov_scores': {},
-        'native_province': None
+        'native_province': None,
+        'include_scores': True
     }
     bot.answer_callback_query(call.id, "شروع مجدد")
     bot.send_message(
