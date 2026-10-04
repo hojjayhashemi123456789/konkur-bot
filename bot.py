@@ -192,15 +192,21 @@ PROVINCE_KEYWORDS = {
     'ایلام': ['ایلام', 'ایالم', 'دهلران', 'ایوان', 'آبدانان', 'دره شهر', 'مهران'],
     'کهگیلویه و بویراحمد': ['کهگیلویه', 'بویراحمد', 'یاسوج', 'گچساران', 'دوگنبدان', 'دهدشت'],
     'اردبیل': ['اردبیل', 'محقق اردبیلی', 'مشکین شهر', 'پارس آباد', 'مغان', 'خلخال', 'گرمی'],
-    'مناطق آزاد و سایر (کیش، قشم و...)': ['کیش', 'قشم', 'چابهار', 'ارس', 'انزلی آزاد', 'بین الملل']
+    'مناطق آزاد و سایر (کیش، قشم و...)': ['کیش', 'قشم', 'بین الملل', 'پردیس خودگردان کیش', 'پردیس بین الملل']
 }
+
+# 🗺 مرتب‌سازی کلیدواژه‌ها بر اساس طول نزولی (جلوگیری از تداخل کلمات کوتاه مانند کرمان با کرمانشاه یا ایران با ایرانشهر)
+SORTED_PROVINCE_KEYWORDS = []
+for prov, kws in PROVINCE_KEYWORDS.items():
+    for kw in kws:
+        SORTED_PROVINCE_KEYWORDS.append((kw, prov))
+SORTED_PROVINCE_KEYWORDS.sort(key=lambda x: len(x[0]), reverse=True)
 
 def get_province_of_uni(uni_str):
     u = str(uni_str).replace('ي', 'ی').replace('ك', 'ک').replace('‌', ' ')
-    for prov, kws in PROVINCE_KEYWORDS.items():
-        for kw in kws:
-            if kw in u:
-                return prov
+    for kw, prov in SORTED_PROVINCE_KEYWORDS:
+        if kw in u:
+            return prov
     return 'سایر دانشگاه‌ها'
 
 df['استان'] = df['دانشگاه قبولی'].apply(get_province_of_uni)
@@ -1254,7 +1260,336 @@ def text_input_handler(message):
     bot.send_message(chat_id, "💡 برای شروع استعلام انتخاب رشته، دستور /start را ارسال فرمایید.")
 
 # =====================================================================
-# 🔍 مرحله محاسباتی، شکستن تساوی و تولید فایل اکسل خروجی
+# 🔍 توابع کمکی دسته‌بندی رشته‌ها و تولید دو فایل اکسل خروجی
+# =====================================================================
+def get_primary_target_major(r_name, selected_majors=None):
+    if selected_majors and 'همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors:
+        for m in selected_majors:
+            if match_major_in_name(m, r_name):
+                return m
+    for m in ALL_TARGET_MAJORS:
+        if match_major_in_name(m, r_name):
+            return m
+    return str(r_name).strip()
+
+def get_chance_text(r_val, rank, opt_p, pess_p):
+    if r_val < rank * 0.95:
+        return f"خوش‌بینانه (تا {opt_p}٪)"
+    elif r_val <= rank * 1.05:
+        return "محتمل و منطقی"
+    else:
+        return f"شانس بالا (تا {pess_p}٪)"
+
+def add_native_checklist_sheet(wb, filtered, selected_majors, native_prov):
+    if not native_prov or native_prov == 'بدون تعهدی':
+        return
+        
+    font_name = 'B Nazanin'
+    h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
+    d_font = Font(name=font_name, size=11, color='000000')
+    t_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+
+    ws2 = wb.create_sheet(title="چک‌لیست تعهد خدمت بومی")
+    ws2.views.sheetView[0].rightToLeft = True
+    
+    headers2 = [
+        'ردیف', 'رشته تحصیلی انتخابی', 'استان بومی تعهدی', 
+        'وضعیت در سوابق سال‌های گذشته', 'دستورالعمل و اقدام الزامی مشاور برای دفترچه کنکور امسال'
+    ]
+    ws2.append(headers2)
+    ws2.row_dimensions[1].height = 28
+    for c_idx in range(1, len(headers2) + 1):
+        c = ws2.cell(row=1, column=c_idx)
+        c.font = h_font
+        c.fill = h_fill
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.border = t_border
+
+    check_majors = selected_majors if ('همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else ALL_TARGET_MAJORS[:15]
+    
+    existing_tahad_majors = set()
+    for _, r in filtered.iterrows():
+        if 'تعهدی' in str(r.get('دوره_تطبیقی', '')):
+            for m in check_majors:
+                if match_major_in_name(m, r.get('رشته قبولی', '')):
+                    existing_tahad_majors.add(m)
+
+    for idx, m in enumerate(check_majors, 1):
+        has_t = m in existing_tahad_majors
+        status_text = "✅ موجود در سوابق رتبه‌های قبولی (در شیت ۱ درج شد)" if has_t else "⚠️ در سوابق این بازه رتبه ثبت نشده است"
+        instr_text = (
+            f"کدرشته‌های تعهدی {m} در علوم پزشکی {native_prov} از دفترچه امسال تطبیق و اولویت‌بندی شود."
+            if has_t else
+            f"⚠️ بررسی الزامی در دفترچه کنکور امسال: مشاور حتماً بررسی کند اگر برای {m} در دانشگاه‌های علوم پزشکی استان {native_prov} ظرفیت تعهد خدمت اعلام شده، فوراً به فرم انتخاب رشته افزوده شود (ظرفیت سالانه متغیر است)."
+        )
+        row_vals = [idx, m, native_prov, status_text, instr_text]
+        ws2.append(row_vals)
+        r_idx = ws2.max_row
+        ws2.row_dimensions[r_idx].height = 25
+        
+        fill2 = PatternFill(start_color='FEF9E7', end_color='FEF9E7', fill_type='solid') if not has_t else PatternFill(start_color='E8F8F5', end_color='E8F8F5', fill_type='solid')
+        for c_idx, val in enumerate(row_vals, 1):
+            cell = ws2.cell(row=r_idx, column=c_idx)
+            cell.font = d_font
+            cell.border = t_border
+            cell.fill = fill2
+            if c_idx in [1, 3]:
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            else:
+                cell.alignment = Alignment(horizontal='right', vertical='center')
+
+    for col in ws2.columns:
+        max_l = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws2.column_dimensions[col_letter].width = max(max_l + 3, 14)
+
+def build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors):
+    font_name = 'B Nazanin'
+    h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
+    d_font = Font(name=font_name, size=11, color='000000')
+    d_bold_font = Font(name=font_name, size=11, bold=True, color='002060')
+    alt_fill = PatternFill(start_color='F2F5F9', end_color='F2F5F9', fill_type='solid')
+    tahad_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
+    t_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+    al_center = Alignment(horizontal='center', vertical='center')
+    al_right = Alignment(horizontal='right', vertical='center', indent=1)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "اولویت‌بندی بر اساس امتیاز"
+    ws.views.sheetView[0].rightToLeft = True
+
+    headers = [
+        'اولویت پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی', 'استان', 'دوره تحصیلی',
+        'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره',
+        'رتبه در سهمیه', 'رتبه کشوری', 'منبع و سال', 'ارزیابی شانس'
+    ]
+    ws.append(headers)
+    ws.row_dimensions[1].height = 28
+
+    for col_idx in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = h_font
+        c.fill = h_fill
+        c.alignment = al_center
+        c.border = t_border
+
+    for r_idx, (_, r) in enumerate(filtered.iterrows(), 2):
+        r_val = int(r['رتبه در سهمیه'])
+        chance_text = get_chance_text(r_val, rank, opt_p, pess_p)
+        row_data = [
+            r['ترتیب_اولویت'],
+            r['رشته قبولی'],
+            r['دانشگاه قبولی'],
+            r['استان'],
+            r.get('دوره_تطبیقی', r.get('دوره', '-')),
+            r['امتیاز_کل'],
+            r['نمره_رشته'],
+            r['نمره_استان'],
+            r['ضریب_دوره'],
+            r_val,
+            r.get('رتبه کشوری', '-'),
+            r.get('منبع', '-'),
+            chance_text
+        ]
+        ws.append(row_data)
+        ws.row_dimensions[r_idx].height = 22
+        is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
+        fill = tahad_fill if is_row_tahad else (alt_fill if r_idx % 2 == 1 else None)
+
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=r_idx, column=col_idx)
+            cell.font = d_bold_font if col_idx in [1, 6] else d_font
+            cell.border = t_border
+            if fill:
+                cell.fill = fill
+            h_name = headers[col_idx - 1]
+            if h_name in ['اولویت پیشنهادی', 'استان', 'دوره تحصیلی', 'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره', 'رتبه در سهمیه', 'رتبه کشوری', 'ارزیابی شانس']:
+                cell.alignment = al_center
+                if isinstance(val, (int, float)) and val > 0:
+                    if isinstance(val, float):
+                        cell.number_format = '0.00'
+                    else:
+                        cell.number_format = '#,##0'
+            else:
+                cell.alignment = al_right
+
+    if native_prov and native_prov != 'بدون تعهدی':
+        ws.append([])
+        b_idx = ws.max_row + 1
+        ws.merge_cells(start_row=b_idx, start_column=1, end_row=b_idx, end_column=len(headers))
+        b_cell = ws.cell(row=b_idx, column=1)
+        b_cell.value = (
+            f"💡 یادآوری مهم مشاور درباره کدرشته‌های تعهد خدمت استان {native_prov}: "
+            f"کدرشته‌های تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی) منحصراً متعلق به داوطلبان بومی استان {native_prov} است. "
+            f"با توجه به متغیر بودن ظرفیت‌ها در هر سال، حتماً کدرشته‌های تعهدی دانشگاه‌های علوم پزشکی استان خود را در دفترچه انتخاب رشته امسال بررسی و در لیست نهایی درج فرمایید."
+        )
+        b_cell.font = Font(name=font_name, size=11, bold=True, color='9C6500')
+        b_cell.fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
+        b_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        b_cell.border = t_border
+        ws.row_dimensions[b_idx].height = 42
+
+    for col in ws.columns:
+        max_l = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
+
+    add_native_checklist_sheet(wb, filtered, selected_majors, native_prov)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors):
+    font_name = 'B Nazanin'
+    h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
+    h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
+    d_font = Font(name=font_name, size=11, color='000000')
+    d_bold_font = Font(name=font_name, size=11, bold=True, color='002060')
+    alt_fill = PatternFill(start_color='F2F5F9', end_color='F2F5F9', fill_type='solid')
+    tahad_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
+    major_banners_fill = PatternFill(start_color='1F497D', end_color='1F497D', fill_type='solid')
+    major_banners_font = Font(name=font_name, size=12, bold=True, color='FFFFFF')
+    t_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+    al_center = Alignment(horizontal='center', vertical='center')
+    al_right = Alignment(horizontal='right', vertical='center', indent=1)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "تفکیک بر اساس رشته"
+    ws.views.sheetView[0].rightToLeft = True
+
+    headers = [
+        'اولویت در رشته', 'اولویت کل پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی', 'استان', 'دوره تحصیلی',
+        'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره',
+        'رتبه در سهمیه', 'رتبه کشوری', 'منبع و سال', 'ارزیابی شانس'
+    ]
+    ws.append(headers)
+    ws.row_dimensions[1].height = 28
+
+    for col_idx in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = h_font
+        c.fill = h_fill
+        c.alignment = al_center
+        c.border = t_border
+
+    # دسته‌بندی رکوردها بر اساس گروه رشته
+    grouped_rows = {}
+    for _, r in filtered.iterrows():
+        m_name = r.get('گروه_رشته', r['رشته قبولی'])
+        if m_name not in grouped_rows:
+            grouped_rows[m_name] = []
+        grouped_rows[m_name].append(r)
+
+    # ترتیب دسته‌ها: اول بر اساس ترتیب رشته‌های انتخابی کاربر، سپس سایر رشته‌ها
+    major_order = selected_majors if (selected_majors and 'همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else ALL_TARGET_MAJORS
+    ordered_keys = []
+    for mo in major_order:
+        if mo in grouped_rows and mo not in ordered_keys:
+            ordered_keys.append(mo)
+    for k in grouped_rows:
+        if k not in ordered_keys:
+            ordered_keys.append(k)
+
+    current_row_idx = 2
+    for major_name in ordered_keys:
+        rows_in_major = grouped_rows[major_name]
+        # مرتب‌سازی گزینه‌های درون رشته بر اساس امتیاز کل نزولی، سپس نمره استان نزولی، سپس رتبه صعودی
+        rows_in_major.sort(key=lambda x: (-x['امتیاز_کل'], -x['نمره_استان'], x['رتبه در سهمیه']))
+
+        # ردیف هدر متمایز گروه رشته
+        ws.row_dimensions[current_row_idx].height = 26
+        ws.merge_cells(start_row=current_row_idx, start_column=1, end_row=current_row_idx, end_column=len(headers))
+        m_cell = ws.cell(row=current_row_idx, column=1)
+        m_cell.value = f"📌 کدرشته‌های قبولی: {major_name} (شامل {len(rows_in_major):,} کدرشته‌محل — مرتب‌شده بر اساس بالاترین امتیاز)"
+        m_cell.font = major_banners_font
+        m_cell.fill = major_banners_fill
+        m_cell.alignment = Alignment(horizontal='right', vertical='center', indent=1)
+        for c_idx in range(1, len(headers) + 1):
+            ws.cell(row=current_row_idx, column=c_idx).border = t_border
+        current_row_idx += 1
+
+        for in_major_idx, r in enumerate(rows_in_major, 1):
+            r_val = int(r['رتبه در سهمیه'])
+            chance_text = get_chance_text(r_val, rank, opt_p, pess_p)
+            row_data = [
+                in_major_idx,
+                r['ترتیب_اولویت'],
+                r['رشته قبولی'],
+                r['دانشگاه قبولی'],
+                r['استان'],
+                r.get('دوره_تطبیقی', r.get('دوره', '-')),
+                r['امتیاز_کل'],
+                r['نمره_رشته'],
+                r['نمره_استان'],
+                r['ضریب_دوره'],
+                r_val,
+                r.get('رتبه کشوری', '-'),
+                r.get('منبع', '-'),
+                chance_text
+            ]
+            ws.append(row_data)
+            ws.row_dimensions[current_row_idx].height = 22
+            is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
+            fill = tahad_fill if is_row_tahad else (alt_fill if in_major_idx % 2 == 1 else None)
+
+            for col_idx, val in enumerate(row_data, 1):
+                cell = ws.cell(row=current_row_idx, column=col_idx)
+                cell.font = d_bold_font if col_idx in [1, 2, 7] else d_font
+                cell.border = t_border
+                if fill:
+                    cell.fill = fill
+                h_name = headers[col_idx - 1]
+                if h_name in ['اولویت در رشته', 'اولویت کل پیشنهادی', 'استان', 'دوره تحصیلی', 'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره', 'رتبه در سهمیه', 'رتبه کشوری', 'ارزیابی شانس']:
+                    cell.alignment = al_center
+                    if isinstance(val, (int, float)) and val > 0:
+                        if isinstance(val, float):
+                            cell.number_format = '0.00'
+                        else:
+                            cell.number_format = '#,##0'
+                else:
+                    cell.alignment = al_right
+            current_row_idx += 1
+
+        # ردیف فاصله ظریف بین گروه‌های رشته
+        ws.append([])
+        ws.row_dimensions[current_row_idx].height = 10
+        current_row_idx += 1
+
+    for col in ws.columns:
+        max_l = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
+
+    add_native_checklist_sheet(wb, filtered, selected_majors, native_prov)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+# =====================================================================
+# 🔍 مرحله محاسباتی، شکستن تساوی و تولید دو فایل اکسل خروجی
 # =====================================================================
 def execute_search_and_send(chat_id):
     state = user_state.get(chat_id, {})
@@ -1270,19 +1605,23 @@ def execute_search_and_send(chat_id):
     selected_provinces = state.get('selected_provinces', ['سراسر کشور'])
     manual_prov_scores = state.get('prov_scores', {})
     
-    min_rank = int(rank * (1 - opt_p / 100.0))
+    min_rank = max(1, int(rank * (1 - opt_p / 100.0)))
     max_rank = int(rank * (1 + pess_p / 100.0))
     
     sub_df = df.copy()
-    if src_filter == '۱۴۰۴':
-        sub_df = sub_df[sub_df['منبع'].str.contains('1404  (1)|۱۴۰۴', na=False) & ~sub_df['منبع'].str.contains('5 درصد|۵ درصد', na=False)]
-    elif src_filter == '۱۴۰۳':
-        sub_df = sub_df[sub_df['منبع'].str.contains('1403|۱۴۰۳', na=False)]
-    elif src_filter == '۵درصد':
-        sub_df = sub_df[sub_df['منبع'].str.contains('5 درصد|۵ درصد', na=False)]
-    elif src_filter == 'سنجش':
-        sub_df = sub_df[sub_df['منبع'].str.contains('سنجش|جامع', na=False)]
-        
+    if region == 5:
+        # در سهمیه ۵ درصد، داده‌ها مربوط به منبع سهمیه ۵ درصد هستند
+        sub_df = sub_df[sub_df['سهمیه'] == 5].copy()
+    else:
+        if src_filter == '۱۴۰۴':
+            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('1404', na=False) & ~sub_df['منبع'].astype(str).str.contains('5 درصد|۵ درصد', na=False)]
+        elif src_filter == '۱۴۰۳':
+            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('1403', na=False)]
+        elif src_filter == '۵درصد':
+            sub_df = sub_df[sub_df['سهمیه'] == region]
+        elif src_filter == 'سنجش':
+            sub_df = sub_df[sub_df['منبع'].astype(str).str.contains('سنجش|جامع', na=False)]
+
     filtered = sub_df[
         (sub_df['سهمیه'] == region) & 
         (sub_df['رتبه در سهمیه'] >= min_rank) & 
@@ -1313,12 +1652,30 @@ def execute_search_and_send(chat_id):
     filtered = filtered[filtered.apply(filter_commitment_seats, axis=1)]
     
     if filtered.empty:
+        # بررسی تشخیصی هوشمند: آیا در سراسر کشور یا با بازه گسترده‌تر قبولی وجود دارد؟
+        check_wider = sub_df[
+            (sub_df['سهمیه'] == region) & 
+            (sub_df['رتبه در سهمیه'] >= max(1, int(rank * 0.5))) & 
+            (sub_df['رتبه در سهمیه'] <= int(rank * 1.5))
+        ]
+        if selected_majors and 'همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors:
+            cond_m = False
+            for m in selected_majors:
+                cond_m = cond_m | check_wider['رشته قبولی'].apply(lambda r: match_major_in_name(m, r))
+            check_wider = check_wider[cond_m]
+            
+        hint_text = ""
+        if len(check_wider) > 0 and selected_provinces and 'سراسر کشور' not in selected_provinces:
+            hint_text = f"\n\n💡 **نکته مشاور:** در استان‌های انتخابی شما در این بازه قبولی ثبت نشده، اما در **سایر استان‌های کشور تعداد {len(check_wider):,} قبولی** برای این رشته‌ها وجود دارد! پیشنهاد می‌شود گزینه «سراسر کشور» را انتخاب فرمایید."
+        else:
+            hint_text = "\n\n💡 **راهنمای مشاور:** پیشنهاد می‌شود بازه درصدی (خوش‌بینانه / بدبینانه) را افزایش دهید یا تعداد رشته‌ها و استان‌های انتخابی را گسترش دهید."
+
         restart_markup = types.InlineKeyboardMarkup()
         restart_markup.add(types.InlineKeyboardButton("🔄 استعلام مجدد", callback_data="restart"))
         msg_text = (
             f"❌ در بازه رتبه‌ای **{min_rank:,}** الی **{max_rank:,}** ({reg_title})\n"
-            f"قبولی متناسب با رشته‌ها و استان‌های انتخابی شما در این منبع یافت نشد.\n\n"
-            "💡 پیشنهاد می‌شود بازه درصدی را افزایش دهید یا تعداد استان‌ها/رشته‌ها را گسترش دهید."
+            f"قبولی متناسب با رشته‌ها و استان‌های انتخابی شما در این منبع یافت نشد."
+            f"{hint_text}"
         )
         bot.send_message(chat_id, msg_text, parse_mode='Markdown', reply_markup=restart_markup)
         return
@@ -1356,8 +1713,9 @@ def execute_search_and_send(chat_id):
     # 5. فرمول ارزیابی و امتیاز کل: (Major * 1.2 + City * 1.0) * Doreh_Multiplier
     filtered['نمره_پایه'] = (filtered['نمره_رشته'] * 1.2) + (filtered['نمره_استان'] * 1.0)
     filtered['امتیاز_کل'] = (filtered['نمره_پایه'] * filtered['ضریب_دوره']).round(2)
+    filtered['گروه_رشته'] = filtered['رشته قبولی'].apply(lambda r: get_primary_target_major(r, selected_majors))
     
-    # 6. شکستن تساوی (Tie-Breaking Rule) و مرتب‌سازی نهایی نزولی:
+    # 6. شکستن تساوی و مرتب‌سازی نزولی بر اساس اولویت کل
     filtered.sort_values(
         by=['امتیاز_کل', 'نمره_رشته', 'نمره_استان', 'رتبه در سهمیه'],
         ascending=[False, False, False, True],
@@ -1370,229 +1728,28 @@ def execute_search_and_send(chat_id):
     majors_disp = "، ".join(selected_majors[:4]) + (f" و {to_persian_num(len(selected_majors)-4)} مورد دیگر" if len(selected_majors) > 4 else "")
     provs_disp = "، ".join(selected_provinces[:4]) + (f" و {to_persian_num(len(selected_provinces)-4)} مورد دیگر" if len(selected_provinces) > 4 else "")
     
-    header_text = (
-        f"📊 **لیست اولویت‌بندی شده انتخاب رشته تجربی:**\n"
+    # -------------------------------------------------------------
+    # 💬 پیام خلاصه نهایی (بدون اسپم و بدون ارسال پیام‌های تکی کارنامه‌ها)
+    # -------------------------------------------------------------
+    summary_msg = (
+        f"🎯 **محاسبات اولویت‌بندی انتخاب رشته تجربی با موفقیت انجام شد!**\n\n"
         f"👤 **سهمیه:** {reg_title} | **رتبه داوطلب:** {rank:,}\n"
-        f"🎯 **بازه تحلیلی:** {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})\n"
-        f"📂 **منبع داده:** {src_label}\n"
-        f"🎓 **رشته‌ها:** {majors_disp}\n"
-        f"🗺 **استان‌ها:** {provs_disp}\n"
-        f"📌 **تعداد کل گزینه‌های یافت‌شده:** {total_count:,} رشته‌محل\n"
-        f"⚖️ **فرمول رتبه‌بندی:** `(نمره رشته × ۱.۲ + نمره شهر × ۱.۰) × ضریب دوره`\n"
-        f"🏥 **وضعیت تعهد خدمت:** {'بومی ' + native_prov if (native_prov and native_prov != 'بدون تعهدی') else 'بدون کدرشته‌های تعهدی'}\n" 
-        f"{'='*32}\n\n"
+        f"📈 **بازه تحلیلی:** {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})\n"
+        f"📂 **منبع آماری:** {src_label}\n"
+        f"🎓 **رشته‌های انتخابی:** {majors_disp}\n"
+        f"🗺 **استان‌های انتخابی:** {provs_disp}\n"
+        f"🏥 **وضعیت تعهد خدمت:** {'بومی ' + native_prov if (native_prov and native_prov != 'بدون تعهدی') else 'بدون کدرشته‌های تعهدی'}\n"
+        f"📌 **تعداد کل کدرشته‌محل‌های یافت‌شده:** **{total_count:,} رشته‌محل**\n\n"
+        f"⚖️ **فرمول رتبه‌بندی:** `(نمره رشته × ۱.۲ + نمره شهر × ۱.۰) × ضریب دوره`\n\n"
+        f"📁 **دو فایل اکسل اختصاصی آماده پرینت و انتخاب رشته در ادامه ارسال می‌گردد:**\n"
+        f"  1️⃣ **فایل ۱ (اولویت‌بندی کلی):** چیدمان از بالاترین امتیاز به پایین‌ترین شانس\n"
+        f"  2️⃣ **فایل ۲ (تفکیک رشته‌ها):** چیدمان موضوعی پشت‌سرهم (همه پرستاری‌ها پشت هم، همه پزشکی‌ها پشت هم و...) به همراه اولویت درون‌رشته‌ای"
     )
-    
-    messages = []
-    current_msg = header_text
-    display_limit = 25
-    
-    for idx, (_, row) in enumerate(filtered.iterrows()):
-        if idx >= display_limit:
-            break
-        r_val = int(row['رتبه در سهمیه'])
-        if r_val < rank * 0.95:
-            chance = f"🎯 خوش‌بینانه (تا {opt_p}٪)"
-        elif r_val <= rank * 1.05:
-            chance = "⚖️ محتمل و منطقی"
-        else:
-            chance = f"🛡️ شانس بالا و حاشیه امن (تا {pess_p}٪)"
-            
-        entry = (
-            f"🏅 **رتبه اولویت {to_persian_num(row['ترتیب_اولویت'])}:** **{row['رشته قبولی']}** | {row['دوره_تطبیقی']}\n"
-            f"🏛 {row['دانشگاه قبولی']} ({row['استان']})\n"
-            f"⭐️ **امتیاز کل:** `{row['امتیاز_کل']}` *(رشته: {row['نمره_رشته']} | شهر: {row['نمره_استان']} | ضریب دوره: {row['ضریب_دوره']})*\n"
-            f"📈 آخرین رتبه قبولی: `{r_val:,}` ({chance})\n"
-            f"{'-'*28}\n"
-        )
-        if len(current_msg) + len(entry) > 3800:
-            messages.append(current_msg)
-            current_msg = entry
-        else:
-            current_msg += entry
-            
-    if current_msg:
-        messages.append(current_msg)
-        
-    for msg in messages:
-        bot.send_message(chat_id, msg, parse_mode='Markdown')
-        
-    if total_count > display_limit:
-        bot.send_message(
-            chat_id, 
-            f"⚠️ جهت راحتی مطالعه، {display_limit} گزینه برتر در بالا نمایش داده شد.\n"
-            f"⏳ در حال آماده‌سازی فایل اکسل کامل آماده پرینت و انتخاب رشته شامل تمام **{total_count:,}** کدرشته‌محل..."
-        )
-        
-    excel_buffer = io.BytesIO()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "اولویت‌بندی انتخاب رشته"
-    ws.views.sheetView[0].rightToLeft = True
-    
-    font_name = 'B Nazanin'
-    h_font = Font(name=font_name, size=11, bold=True, color='FFFFFF')
-    h_fill = PatternFill(start_color='002060', end_color='002060', fill_type='solid')
-    d_font = Font(name=font_name, size=11, color='000000')
-    d_bold_font = Font(name=font_name, size=11, bold=True, color='002060')
-    alt_fill = PatternFill(start_color='F2F5F9', end_color='F2F5F9', fill_type='solid')
-    t_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
-    al_center = Alignment(horizontal='center', vertical='center')
-    al_right = Alignment(horizontal='right', vertical='center', indent=1)
-    
-    headers = [
-        'اولویت پیشنهادی', 'رشته قبولی', 'دانشگاه قبولی', 'استان', 'دوره تحصیلی',
-        'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره',
-        'رتبه در سهمیه', 'رتبه کشوری', 'منبع و سال', 'ارزیابی شانس'
-    ]
-    ws.append(headers)
-    ws.row_dimensions[1].height = 28
-    
-    tahad_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
-    for col_idx in range(1, len(headers) + 1):
-        c = ws.cell(row=1, column=col_idx)
-        c.font = h_font
-        c.fill = h_fill
-        c.alignment = al_center
-        c.border = t_border
-        
-    for r_idx, (_, r) in enumerate(filtered.iterrows(), 2):
-        r_val = int(r['رتبه در سهمیه'])
-        if r_val < rank * 0.95:
-            chance_text = f"خوش‌بینانه (تا {opt_p}٪)"
-        elif r_val <= rank * 1.05:
-            chance_text = "محتمل و منطقی"
-        else:
-            chance_text = f"شانس بالا (تا {pess_p}٪)"
-            
-        row_data = [
-            r['ترتیب_اولویت'],
-            r['رشته قبولی'],
-            r['دانشگاه قبولی'],
-            r['استان'],
-            r['دوره_تطبیقی'],
-            r['امتیاز_کل'],
-            r['نمره_رشته'],
-            r['نمره_استان'],
-            r['ضریب_دوره'],
-            r_val,
-            r.get('رتبه کشوری', '-'),
-            r.get('منبع', '-'),
-            chance_text
-        ]
-        ws.append(row_data)
-        ws.row_dimensions[r_idx].height = 22
-        is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
-        fill = tahad_fill if is_row_tahad else (alt_fill if r_idx % 2 == 1 else None)
-        
-        for col_idx, val in enumerate(row_data, 1):
-            cell = ws.cell(row=r_idx, column=col_idx)
-            cell.font = d_bold_font if col_idx == 6 else d_font
-            cell.border = t_border
-            if fill:
-                cell.fill = fill
-            h_name = headers[col_idx - 1]
-            if h_name in ['اولویت پیشنهادی', 'استان', 'امتیاز کل اولویت', 'نمره رشته (۱-۱۰)', 'نمره شهر (۱-۱۰)', 'ضریب دوره', 'رتبه در سهمیه', 'رتبه کشوری', 'ارزیابی شانس']:
-                cell.alignment = al_center
-                if isinstance(val, (int, float)) and val > 0:
-                    if isinstance(val, float):
-                        cell.number_format = '0.00'
-                    else:
-                        cell.number_format = '#,##0'
-            else:
-                cell.alignment = al_right
+    bot.send_message(chat_id, summary_msg, parse_mode='Markdown')
 
-    if native_prov and native_prov != 'بدون تعهدی':
-        ws.append([])
-        b_idx = ws.max_row + 1
-        ws.merge_cells(start_row=b_idx, start_column=1, end_row=b_idx, end_column=len(headers))
-        b_cell = ws.cell(row=b_idx, column=1)
-        b_cell.value = (
-            f"💡 یادآوری مهم مشاور درباره کدرشته‌های تعهد خدمت استان {native_prov}: "
-            f"کدرشته‌های تعهد خدمت ۱.۵ برابر (مناطق محروم / عدالت آموزشی) منحصراً متعلق به داوطلبان بومی استان {native_prov} است. "
-            f"با توجه به متغیر بودن ظرفیت‌ها در هر سال، حتماً کدرشته‌های تعهدی دانشگاه‌های علوم پزشکی استان خود را در دفترچه انتخاب رشته امسال بررسی و در لیست نهایی درج فرمایید."
-        )
-        b_cell.font = Font(name=font_name, size=11, bold=True, color='9C6500')
-        b_cell.fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
-        b_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        b_cell.border = t_border
-        ws.row_dimensions[b_idx].height = 42
-
-    for col in ws.columns:
-        max_l = max(len(str(cell.value or '')) for cell in col)
-        col_letter = get_column_letter(col[0].column)
-        ws.column_dimensions[col_letter].width = max(max_l + 4, 13)
-
-    # -------------------------------------------------------------
-    # 📑 شیت دوم اختصاصی: چک‌لیست رشته‌های تعهد خدمت بومی (دفترچه امسال)
-    # -------------------------------------------------------------
-    if native_prov and native_prov != 'بدون تعهدی':
-        ws2 = wb.create_sheet(title="چک‌لیست تعهد خدمت بومی")
-        ws2.views.sheetView[0].rightToLeft = True
-        
-        headers2 = [
-            'ردیف', 'رشته تحصیلی انتخابی', 'استان بومی تعهدی', 
-            'وضعیت در سوابق سال‌های گذشته', 'دستورالعمل و اقدام الزامی مشاور برای دفترچه کنکور امسال'
-        ]
-        ws2.append(headers2)
-        ws2.row_dimensions[1].height = 28
-        for c_idx in range(1, len(headers2) + 1):
-            c = ws2.cell(row=1, column=c_idx)
-            c.font = h_font
-            c.fill = h_fill
-            c.alignment = al_center
-            c.border = t_border
-
-        check_majors = selected_majors if ('همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else ALL_TARGET_MAJORS[:15]
-        
-        existing_tahad_majors = set()
-        for _, r in filtered.iterrows():
-            if 'تعهدی' in str(r.get('دوره_تطبیقی', '')):
-                for m in check_majors:
-                    if match_major_in_name(m, r.get('رشته قبولی', '')):
-                        existing_tahad_majors.add(m)
-
-        for idx, m in enumerate(check_majors, 1):
-            has_t = m in existing_tahad_majors
-            status_text = "✅ موجود در سوابق رتبه‌های قبولی (در شیت ۱ درج شد)" if has_t else "⚠️ در سوابق این بازه رتبه ثبت نشده است"
-            instr_text = (
-                f"کدرشته‌های تعهدی {m} در علوم پزشکی {native_prov} از دفترچه امسال تطبیق و اولویت‌بندی شود."
-                if has_t else
-                f"⚠️ بررسی الزامی در دفترچه کنکور امسال: مشاور حتماً بررسی کند اگر برای {m} در دانشگاه‌های علوم پزشکی استان {native_prov} ظرفیت تعهد خدمت اعلام شده، فوراً به برگه انتخاب رشته افزوده شود (ظرفیت سالانه متغیر است)."
-            )
-            row_vals = [idx, m, native_prov, status_text, instr_text]
-            ws2.append(row_vals)
-            r_idx = ws2.max_row
-            ws2.row_dimensions[r_idx].height = 25
-            
-            fill2 = PatternFill(start_color='FEF9E7', end_color='FEF9E7', fill_type='solid') if not has_t else PatternFill(start_color='E8F8F5', end_color='E8F8F5', fill_type='solid')
-            for c_idx, val in enumerate(row_vals, 1):
-                cell = ws2.cell(row=r_idx, column=c_idx)
-                cell.font = d_font
-                cell.border = t_border
-                cell.fill = fill2
-                if c_idx in [1, 3]:
-                    cell.alignment = al_center
-                else:
-                    cell.alignment = al_right
-
-        for col in ws2.columns:
-            max_l = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            ws2.column_dimensions[col_letter].width = max(max_l + 3, 14)
-
-    wb.save(excel_buffer)
-    excel_buffer.seek(0)
-    
-    # ارسال پیام چک‌لیست تعهد خدمت در تلگرام
+    # ارسال پیام راهنمای چک‌لیست تعهد خدمت در تلگرام
     if native_prov and native_prov != 'بدون تعهدی':
         check_majors_tg = selected_majors if ('همه رشته‌ها' not in selected_majors and 'همه' not in selected_majors) else ALL_TARGET_MAJORS[:10]
-        
         existing_tahad_majors_tg = set()
         for _, r in filtered.iterrows():
             if 'تعهدی' in str(r.get('دوره_تطبیقی', '')):
@@ -1603,30 +1760,59 @@ def execute_search_and_send(chat_id):
         checklist_lines = []
         for m in check_majors_tg:
             if m in existing_tahad_majors_tg:
-                checklist_lines.append(f"▫️ ✅ **{m}:** دارای قبولی تعهدی در سوابق (در جدول اکسل درج شد).")
+                checklist_lines.append(f"▫️ ✅ **{m}:** دارای قبولی تعهدی در سوابق.")
             else:
-                checklist_lines.append(f"▫️ ⚠️ **{m}:** در سوابق این رتبه نبود؛ *حتماً دفترچه امسال بررسی شود و در صورت داشتن تعهدی، به فرم انتخاب رشته اضافه گردد.*")
+                checklist_lines.append(f"▫️ ⚠️ **{m}:** در سوابق نبود؛ *حتماً دفترچه امسال بررسی و در صورت داشتن تعهدی، به فرم انتخاب رشته اضافه گردد.*")
                 
         checklist_text = (
             f"🏥 **چک‌لیست کدرشته‌های تعهد خدمت ۱.۵ برابر (بومی استان {native_prov}):**\n"
-            f"با توجه به اینکه کدرشته‌های تعهد خدمت صرفاً به داوطلبان بومی استان **{native_prov}** تعلق دارد و ظرفیت‌های آن هر سال در دفترچه تغییر می‌کند:\n\n"
+            f"با توجه به اینکه کدرشته‌های تعهد خدمت صرفاً به داوطلبان بومی استان **{native_prov}** تعلق دارد و ظرفیت‌ها هر سال تغییر می‌کند:\n\n"
             + "\n".join(checklist_lines) +
-            f"\n\n💡 *یک شیت مستقل به نام «چک‌لیست تعهد خدمت بومی» نیز در فایل اکسل زیر ضمیمه شده است.*"
+            f"\n\n💡 *شیت دوم هر دو فایل اکسل نیز به این چک‌لیست اختصاص یافته است.*"
         )
         bot.send_message(chat_id, checklist_text, parse_mode='Markdown')
 
-    file_title = f"اولویت_بندی_انتخاب_رشته_رتبه_{rank}_{reg_title.replace(' ', '_')}.xlsx"
+    # -------------------------------------------------------------
+    # 📑 تولید و ارسال فایل اکسل ۱: اولویت‌بندی بر اساس امتیاز کل
+    # -------------------------------------------------------------
+    clean_reg_name = reg_title.replace(' ', '_')
+    file_title_prio = f"۱_اولویت_بندی_بر_اساس_امتیاز_رتبه_{rank}_{clean_reg_name}.xlsx"
+    buf_prio = build_excel_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors)
+    
+    bot.send_document(
+        chat_id, 
+        buf_prio, 
+        visible_file_name=file_title_prio, 
+        caption=(
+            f"📁 **فایل اول: اولویت‌بندی کلی بر اساس امتیاز**\n\n"
+            f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+            f"📌 چیدمان جامع بر اساس فرمول اولویت، نمرات رشته، شهر و ضریب دوره."
+        ),
+        parse_mode='Markdown'
+    )
+
+    # -------------------------------------------------------------
+    # 📑 تولید و ارسال فایل اکسل ۲: تفکیک بر اساس رشته‌ها پشت‌سرهم
+    # -------------------------------------------------------------
+    file_title_major = f"۲_تفکیک_بر_اساس_رشته_رتبه_{rank}_{clean_reg_name}.xlsx"
+    buf_major = build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, selected_majors)
+    
     restart_markup = types.InlineKeyboardMarkup()
     restart_markup.add(types.InlineKeyboardButton("🔄 استعلام جدید", callback_data="restart"))
     
     bot.send_document(
         chat_id, 
-        excel_buffer, 
-        visible_file_name=file_title, 
-        caption=f"📁 **فایل اکسل فرمول‌بندی شده انتخاب رشته رتبه {rank:,} ({reg_title})**\n\n📌 شامل رتبه‌بندی دقیق از بالاترین نمره طبق فرمول اولویت، نمرات رشته، شهر، ضریب دوره و بازه {opt_p}٪ خوش‌بینانه تا {pess_p}٪ بدبینانه.",
+        buf_major, 
+        visible_file_name=file_title_major, 
+        caption=(
+            f"📁 **فایل دوم: تفکیک موضوعی بر اساس رشته**\n\n"
+            f"👤 رتبه: **{rank:,}** ({reg_title}) | تعداد: **{total_count:,}** رشته‌محل\n"
+            f"📌 چیدمان رشته‌ها پشت‌سرهم (پرستاری، پزشکی، دندانپزشکی و...) به همراه اولویت درون‌رشته‌ای."
+        ),
         parse_mode='Markdown'
     )
-    bot.send_message(chat_id, "💡 برای ارزیابی رتبه یا اولویت‌های دیگر، دکمه زیر را لمس فرمایید:", reply_markup=restart_markup)
+    
+    bot.send_message(chat_id, "💡 برای استعلام رتبه یا اولویت‌های دیگر، دکمه زیر را لمس فرمایید:", reply_markup=restart_markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "restart")
 def callback_restart(call):

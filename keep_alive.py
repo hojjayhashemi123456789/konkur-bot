@@ -1,6 +1,7 @@
 # ==============================================================================
 # 🌐 KEEP-ALIVE & ANTI-SLEEP SERVER (ضد خاموشی ۲۴ ساعته برای رندر و هاست‌های ابری)
 # ==============================================================================
+import os
 import time
 import threading
 import urllib.request
@@ -55,9 +56,10 @@ def run_keep_alive_server(port):
         print(f"⚠️ [Keep-Alive] وب‌سرور: {e}")
 
 def auto_pinger_loop():
-    time.sleep(30)
+    time.sleep(25)
+    default_url = "https://konkur-bot-1.onrender.com"
     while True:
-        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("APP_URL")
+        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("APP_URL") or default_url
         now_str = time.strftime("%H:%M:%S")
         if url:
             try:
@@ -72,7 +74,7 @@ def auto_pinger_loop():
                         print(f"💓 [Keep-Alive] پینگ خودکار موفق به {url} در {now_str}")
             except Exception as e:
                 print(f"⚠️ [Keep-Alive] وضعیت پینگ: {e}")
-        time.sleep(600)
+        time.sleep(480)
 
 def start_keep_alive():
     port = int(os.environ.get("PORT", 10000))
