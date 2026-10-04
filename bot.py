@@ -19,6 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import arabic_reshaper
 from bidi.algorithm import get_display
+import unicodedata
 
 import time
 import urllib.request
@@ -32,14 +33,17 @@ BOT_PASSWORD = '1381'
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTH_FILE = os.path.join(BASE_DIR, 'auth_users.json')
+USED_GUESTS_FILE = os.path.join(BASE_DIR, 'used_guests.json')
 
 # =====================================================================
 # 🖋 تنظیم فونت پینار (Pinar) و سیستم چاپ PDF افقی فارسی
 # =====================================================================
 PINAR_FONT_PATH = os.path.join(BASE_DIR, 'Pinar-Regular.ttf')
+pinar_ttfont = None
 if os.path.exists(PINAR_FONT_PATH):
     try:
-        pdfmetrics.registerFont(TTFont('Pinar', PINAR_FONT_PATH))
+        pinar_ttfont = TTFont('Pinar', PINAR_FONT_PATH)
+        pdfmetrics.registerFont(pinar_ttfont)
         PDF_FONT_NAME = 'Pinar'
     except Exception as e:
         print(f"Error registering Pinar font in ReportLab: {e}")
@@ -47,10 +51,31 @@ if os.path.exists(PINAR_FONT_PATH):
 else:
     PDF_FONT_NAME = 'Helvetica'
 
+# تنظیم ریشیپر فارسی: جلوگیری از حروف ایزوله ناشناخته در پینار با حفظ کاراکترهای اسمی
 reshaper = arabic_reshaper.ArabicReshaper({
+    'use_unshaped_instead_of_isolated': True,
+    'support_ligatures': False,
     'delete_harakat': False,
-    'support_ligatures': True,
 })
+
+def safe_char_normalize(text):
+    if not text:
+        return ''
+    if PDF_FONT_NAME != 'Pinar' or not pinar_ttfont:
+        return text
+    cmap = pinar_ttfont.face.charToGlyph
+    clean = []
+    for ch in text:
+        o = ord(ch)
+        if o <= 32 or cmap.get(o) is not None:
+            clean.append(ch)
+        else:
+            norm = unicodedata.normalize('NFKD', ch)
+            if norm and cmap.get(ord(norm[0])) is not None:
+                clean.append(norm[0])
+            else:
+                clean.append(' ')
+    return ''.join(clean)
 
 def fa_text(text, wrap_width=None):
     if text is None:
@@ -60,12 +85,12 @@ def fa_text(text, wrap_width=None):
         return '-'
     if wrap_width and len(s) > wrap_width:
         lines = textwrap.wrap(s, width=wrap_width)
-        reshaped_lines = [get_display(reshaper.reshape(l)) for l in lines]
+        reshaped_lines = [safe_char_normalize(get_display(reshaper.reshape(l))) for l in lines]
         return '<br/>'.join(reshaped_lines)
     try:
-        return get_display(reshaper.reshape(s))
+        return safe_char_normalize(get_display(reshaper.reshape(s)))
     except Exception:
-        return s
+        return safe_char_normalize(s)
 
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -93,21 +118,21 @@ class NumberedCanvas(canvas.Canvas):
         self.setStrokeColor(colors.HexColor('#002060'))
         self.setLineWidth(1)
         self.line(20, h - 22, w - 20, h - 22)
-        top_txt = get_display(reshaper.reshape('سامانه هوشمند انتخاب رشته تجربی ۱۴۰۴ | نسخه رسمی چاپی افقی'))
+        top_txt = fa_text('سامانه هوشمند انتخاب رشته تجربی ۱۴۰۴ | نسخه رسمی چاپی افقی')
         self.drawRightString(w - 20, h - 18, top_txt)
         
         # خط افقی پایین صفحه
         self.setStrokeColor(colors.HexColor('#D9D9D9'))
         self.setLineWidth(0.5)
         self.line(20, 20, w - 20, 20)
-        page_str = get_display(reshaper.reshape(f'صفحه {self._pageNumber} از {page_count}'))
+        page_str = fa_text(f'صفحه {self._pageNumber} از {page_count}')
         self.drawString(25, 11, page_str)
-        note_str = get_display(reshaper.reshape('تنظیم‌شده بر اساس بالاترین شانس قبولی و اولویت‌بندی علمی'))
+        note_str = fa_text('تنظیم‌شده بر اساس بالاترین شانس قبولی و اولویت‌بندی علمی')
         self.drawRightString(w - 20, 11, note_str)
         self.restoreState()
 
 # =====================================================================
-# 🔐 سیستم احراز هویت با رمز عبور و ذخیره‌سازی دائمی
+# 🔐 سیستم احراز هویت با رمز عبور و محدودیت ۱ بار مهمان (Persistent Guest Tracking)
 # =====================================================================
 def load_auth_users():
     if os.path.exists(AUTH_FILE):
@@ -125,9 +150,26 @@ def load_auth_users():
             return set()
     return set()
 
-authenticated_users = load_auth_users()
+def load_used_guests():
+    if os.path.exists(USED_GUESTS_FILE):
+        try:
+            with open(USED_GUESTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                res = set()
+                for item in data:
+                    try:
+                        res.add(int(item))
+                    except Exception:
+                        res.add(str(item))
+                return res
+        except Exception:
+            return set()
+    return set()
 
-def save_auth_user(chat_id):
+authenticated_users = load_auth_users()
+used_guest_users = load_used_guests()
+
+def save_master_user(chat_id):
     try:
         cid = int(chat_id)
     except Exception:
@@ -141,7 +183,23 @@ def save_auth_user(chat_id):
     except Exception as e:
         print(f"Error saving auth user: {e}")
 
-def is_authenticated(chat_id):
+def mark_guest_used(chat_id):
+    try:
+        cid = int(chat_id)
+    except Exception:
+        cid = str(chat_id)
+    if is_master_user(cid):
+        return
+    used_guest_users.add(cid)
+    guests = load_used_guests()
+    guests.add(cid)
+    try:
+        with open(USED_GUESTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(list(guests), f)
+    except Exception as e:
+        print(f"Error saving used guest: {e}")
+
+def is_master_user(chat_id):
     try:
         cid = int(chat_id)
     except Exception:
@@ -152,6 +210,47 @@ def is_authenticated(chat_id):
         authenticated_users.add(cid)
         return True
     return False
+
+def has_used_guest(chat_id):
+    try:
+        cid = int(chat_id)
+    except Exception:
+        cid = str(chat_id)
+    if cid in used_guest_users or str(cid) in used_guest_users:
+        return True
+    if cid in load_used_guests():
+        used_guest_users.add(cid)
+        return True
+    return False
+
+def is_user_blocked(chat_id):
+    if is_master_user(chat_id):
+        return False
+    if has_used_guest(chat_id):
+        return True
+    return False
+
+def get_block_message():
+    return (
+        "⛔️ **سقف مجاز استفاده شما از ربات به پایان رسیده است.**\n\n"
+        "▫️ هر کاربر مهمان تنها **یک‌بار** می‌تواند مراحل انتخاب رشته را تکمیل و فایل‌های خروجی را دریافت نماید. سهمیه رایگان اکانت شما اکنون به پایان رسیده است.\n\n"
+        "📌 جهت تمدید اعتبار، دریافت رمز عبور و دسترسی نامحدود، لطفاً به آیدی پشتیبانی پیام دهید:\n"
+        "👉 [ارتباط با پشتیبانی در تلگرام (دکتر هاشمی)](https://t.me/Hojjat_hshmi)\n"
+        "🆔 آیدی تلگرام: @Hojjat_hshmi\n\n"
+        "🔑 *چنانچه رمز عبور اختصاصی دریافت کرده‌اید، آن را در همین چت تایپ و ارسال فرمایید تا دسترسی شما بلافاصله فعال گردد.*"
+    )
+
+def check_blocked_callback(call):
+    chat_id = call.message.chat.id
+    if is_user_blocked(chat_id):
+        try:
+            bot.answer_callback_query(call.id, "⛔️ سهمیه استفاده رایگان شما به پایان رسیده است.", show_alert=True)
+        except Exception:
+            pass
+        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
+        return True
+    return False
+
 
 # =====================================================================
 # 🌐 تنظیم هوشمند پروکسی و دور زدن فیلترینگ تلگرام (Smart Proxy Detection)
@@ -776,16 +875,9 @@ def build_provinces_keyboard(selected_list):
 def send_welcome(message):
     chat_id = message.chat.id
     
-    # 🔒 بررسی رمز عبور (Password Protection)
-    if not is_authenticated(chat_id):
-        user_state[chat_id] = {'step': 'enter_password'}
-        bot.send_message(
-            chat_id,
-            "🔒 **به ربات هوشمند انتخاب رشته تجربی دکتر هاشمی خوش آمدید!**\n\n"
-            "▫️ این ربات اختصاصی است. لطفاً جهت فعال‌سازی دسترسی خود، **رمز عبور** را ارسال فرمایید:\n\n"
-            "*(رمز عبور تعیین شده را تایپ نمایید)*",
-            parse_mode='Markdown'
-        )
+    # بررسی محدودیت اکانت مهمان
+    if is_user_blocked(chat_id):
+        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
         return
 
     user_state[chat_id] = {
@@ -802,8 +894,12 @@ def send_welcome(message):
         'selected_sources': []
     }
     
+    is_master = is_master_user(chat_id)
+    badge = "👑 **دسترسی نامحدود فعال است**" if is_master else "🎁 **دسترسی مهمان (۱ بار استفاده رایگان)**"
+    
     welcome_text = (
         "👋 **به ربات هوشمند انتخاب رشته تجربی خوش آمدید!**\n\n"
+        f"▫️ **وضعیت کاربری شما:** {badge}\n"
         "✨ **سیستم اولویت‌بندی اختصاصی و تصمیم‌گیری چندمعیاره:**\n"
         "▫️ پایگاه داده جامع ۱۷,۴۶۰ کارنامه قبولی (۱۴۰۴، ۱۴۰۳، سهمیه ۵ درصد، سنجش و مهروماه)\n"
         "▫️ نمره‌دهی خطی (۱ تا ۱۰) به ترتیب علاقه و ترجیح سکونت\n"
@@ -817,8 +913,8 @@ def send_welcome(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reg_'))
 def callback_region(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     reg_val = int(call.data.split('_')[1])
     if chat_id not in user_state:
@@ -875,8 +971,8 @@ def send_percentage_selection_prompt(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pct_p_'))
 def callback_percentage_preset(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     parts = call.data.split('_')
     opt_val = int(parts[2])
@@ -893,8 +989,8 @@ def callback_percentage_preset(call):
 @bot.callback_query_handler(func=lambda call: call.data == 'pct_custom_menu')
 def callback_custom_percentage_menu(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -922,8 +1018,8 @@ def callback_custom_percentage_menu(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pct_setopt_') or call.data.startswith('pct_setpes_'))
 def callback_update_single_pct(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -978,8 +1074,8 @@ def proceed_to_source_step(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('src_'))
 def callback_source(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -1112,8 +1208,8 @@ def send_majors_selection_prompt(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('maj_'))
 def callback_major_action(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     action = call.data[4:]
     
@@ -1194,8 +1290,8 @@ def proceed_to_native_province_step(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('natprov_'))
 def callback_native_province(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -1255,8 +1351,8 @@ def send_provinces_selection_prompt(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('prov_'))
 def callback_province_action(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     action = call.data[5:]
     
@@ -1336,8 +1432,8 @@ def proceed_to_score_columns_prompt(chat_id, message_id=None):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('scoreopt_'))
 def callback_score_option(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     opt_type = call.data[9:]
     user_state[chat_id]['export_pdf'] = ('pdf' in opt_type)
@@ -1356,8 +1452,8 @@ def callback_score_option(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('back_'))
 def callback_back_navigation(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     data = call.data
     bot.answer_callback_query(call.id, "بازگشت به مرحله قبل")
@@ -1425,12 +1521,12 @@ def text_input_handler(message):
     t_clean = t_clean.strip()
     
     if t_clean == BOT_PASSWORD:
-        save_auth_user(chat_id)
+        save_master_user(chat_id)
         current_step = user_state.get(chat_id, {}).get('step')
-        if current_step and current_step not in ['enter_password', 'select_region']:
+        if current_step and current_step not in ['enter_password', 'select_region', None]:
             bot.send_message(
                 chat_id,
-                "🔓 **رمز عبور با موفقیت تایید شد.**\nدسترسی شما فعال است و انتخاب‌های قبلی شما با موفقیت حفظ شده‌اند.",
+                "🔓 **رمز عبور با موفقیت تایید شد. دسترسی نامحدود شما فعال گردید!**\nانتخاب‌های قبلی شما با موفقیت حفظ شده‌اند و می‌توانید مراحل را ادامه دهید.",
                 parse_mode='Markdown'
             )
             # هدایت کاربر به آخرین مرحله فعلی بدون ریست شدن یا باگ خوردن
@@ -1452,20 +1548,15 @@ def text_input_handler(message):
         else:
             bot.send_message(
                 chat_id, 
-                "🔓 **رمز عبور با موفقیت تایید شد. دسترسی شما با موفقیت فعال گردید!**\n\nدر حال آماده‌سازی منوی اصلی انتخاب رشته...",
+                "🔓 **رمز عبور با موفقیت تایید شد. دسترسی نامحدود شما فعال گردید!**\n\nدر حال آماده‌سازی منوی اصلی انتخاب رشته...",
                 parse_mode='Markdown'
             )
             send_welcome(message)
             return
 
-    # اگر کاربر احراز هویت نشده باشد و چیز دیگری ارسال کرده باشد
-    if not is_authenticated(chat_id):
-        bot.send_message(
-            chat_id,
-            "❌ **رمز عبور وارد شده نادرست است.**\n\n"
-            "🔒 لطفاً جهت ورود، رمز عبور صحیح ربات را ارسال فرمایید:",
-            parse_mode='Markdown'
-        )
+    # بررسی محدودیت اکانت مهمان
+    if is_user_blocked(chat_id):
+        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
         return
             
     if chat_id not in user_state:
@@ -2071,20 +2162,20 @@ def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title,
                 Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
                 Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
                 Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
-                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=25), style_cell_r),
-                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=18), style_cell_r),
+                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=32), style_cell_r),
+                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=24), style_cell_r),
                 Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold)
             ]
         else:
             row = [
-                Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=20), style_cell_c),
+                Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=22), style_cell_c),
                 Paragraph(fa_text(k_disp), style_cell_c),
                 Paragraph(fa_text(chance_text), style_cell_c),
                 Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
                 Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
                 Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
-                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=30), style_cell_r),
-                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=22), style_cell_r),
+                Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=36), style_cell_r),
+                Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=26), style_cell_r),
                 Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold)
             ]
         table_data.append(row)
@@ -2280,21 +2371,21 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
                     Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
                     Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
                     Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
-                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=24), style_cell_r),
-                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=16), style_cell_r),
+                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=32), style_cell_r),
+                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=24), style_cell_r),
                     Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold),
                     Paragraph(fa_text(str(in_major_idx)), style_cell_bold)
                 ]
             else:
                 row = [
-                    Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=18), style_cell_c),
+                    Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=20), style_cell_c),
                     Paragraph(fa_text(k_disp), style_cell_c),
                     Paragraph(fa_text(chance_text), style_cell_c),
                     Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
                     Paragraph(fa_text(str(r.get('استان', '-'))), style_cell_c),
                     Paragraph(fa_text(f"{r_val:,}"), style_cell_bold),
-                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=28), style_cell_r),
-                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=20), style_cell_r),
+                    Paragraph(fa_text(str(r['دانشگاه قبولی']), wrap_width=36), style_cell_r),
+                    Paragraph(fa_text(str(r['رشته قبولی']), wrap_width=26), style_cell_r),
                     Paragraph(fa_text(str(r['ترتیب_اولویت'])), style_cell_bold),
                     Paragraph(fa_text(str(in_major_idx)), style_cell_bold)
                 ]
@@ -2662,6 +2753,9 @@ def execute_search_and_send(chat_id):
     if export_pdf:
         send_pdf_results(chat_id)
         
+    # 🛑 ثبت مصرف سهمیه کاربر مهمان (دسترسی تک‌کاربره یک‌بار مصرف)
+    mark_guest_used(chat_id)
+        
     action_markup = types.InlineKeyboardMarkup(row_width=1)
     if not export_pdf:
         action_markup.add(types.InlineKeyboardButton("📄 دریافت هر دو فایل به صورت PDF چاپی (افقی A4)", callback_data="dl_pdf_both"))
@@ -2672,16 +2766,14 @@ def execute_search_and_send(chat_id):
 @bot.callback_query_handler(func=lambda call: call.data == "dl_pdf_both")
 def callback_dl_pdf_both(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
     bot.answer_callback_query(call.id, "در حال تولید فایل‌های PDF چاپی...")
     send_pdf_results(chat_id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "restart")
 def callback_restart(call):
     chat_id = call.message.chat.id
-    if not is_authenticated(chat_id):
-        save_auth_user(chat_id)
+    if check_blocked_callback(call):
+        return
         
     user_state[chat_id] = {
         'step': 'select_region',
