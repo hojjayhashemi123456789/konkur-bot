@@ -232,13 +232,18 @@ def is_user_blocked(chat_id):
 
 def get_block_message():
     return (
-        "⛔️ **سقف مجاز استفاده شما از ربات به پایان رسیده است.**\n\n"
-        "▫️ هر کاربر مهمان تنها **یک‌بار** می‌تواند مراحل انتخاب رشته را تکمیل و فایل‌های خروجی را دریافت نماید. سهمیه رایگان اکانت شما اکنون به پایان رسیده است.\n\n"
+        "⛔️ <b>سقف مجاز استفاده شما از ربات به پایان رسیده است.</b>\n\n"
+        "▫️ هر کاربر مهمان تنها <b>یک‌بار</b> می‌تواند مراحل انتخاب رشته را تکمیل و فایل‌های خروجی را دریافت نماید. سهمیه رایگان اکانت شما اکنون به پایان رسیده است.\n\n"
         "📌 جهت تمدید اعتبار، دریافت رمز عبور و دسترسی نامحدود، لطفاً به آیدی پشتیبانی پیام دهید:\n"
-        "👉 [ارتباط با پشتیبانی در تلگرام (دکتر هاشمی)](https://t.me/Hojjat_hshmi)\n"
+        "👉 <a href=\"https://t.me/Hojjat_hshmi\">ارتباط با پشتیبانی در تلگرام (دکتر هاشمی)</a>\n"
         "🆔 آیدی تلگرام: @Hojjat_hshmi\n\n"
-        "🔑 *چنانچه رمز عبور اختصاصی دریافت کرده‌اید، آن را در همین چت تایپ و ارسال فرمایید تا دسترسی شما بلافاصله فعال گردد.*"
+        "🔑 <i>چنانچه رمز عبور اختصاصی دریافت کرده‌اید، آن را در همین چت تایپ و ارسال فرمایید تا دسترسی شما بلافاصله فعال گردد.</i>"
     )
+
+def get_block_keyboard():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💬 پیام به پشتیبانی در تلگرام", url="https://t.me/Hojjat_hshmi"))
+    return markup
 
 def check_blocked_callback(call):
     chat_id = call.message.chat.id
@@ -247,7 +252,16 @@ def check_blocked_callback(call):
             bot.answer_callback_query(call.id, "⛔️ سهمیه استفاده رایگان شما به پایان رسیده است.", show_alert=True)
         except Exception:
             pass
-        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
+        try:
+            bot.send_message(
+                chat_id, 
+                get_block_message(), 
+                parse_mode='HTML', 
+                reply_markup=get_block_keyboard(), 
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending block message: {e}")
         return True
     return False
 
@@ -877,7 +891,13 @@ def send_welcome(message):
     
     # بررسی محدودیت اکانت مهمان
     if is_user_blocked(chat_id):
-        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
+        bot.send_message(
+            chat_id, 
+            get_block_message(), 
+            parse_mode='HTML', 
+            reply_markup=get_block_keyboard(), 
+            disable_web_page_preview=True
+        )
         return
 
     user_state[chat_id] = {
@@ -1556,7 +1576,13 @@ def text_input_handler(message):
 
     # بررسی محدودیت اکانت مهمان
     if is_user_blocked(chat_id):
-        bot.send_message(chat_id, get_block_message(), parse_mode='Markdown', disable_web_page_preview=True)
+        bot.send_message(
+            chat_id, 
+            get_block_message(), 
+            parse_mode='HTML', 
+            reply_markup=get_block_keyboard(), 
+            disable_web_page_preview=True
+        )
         return
             
     if chat_id not in user_state:
@@ -1973,7 +1999,7 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
         ws.row_dimensions[current_row_idx].height = 26
         ws.merge_cells(start_row=current_row_idx, start_column=1, end_row=current_row_idx, end_column=len(headers))
         m_cell = ws.cell(row=current_row_idx, column=1)
-        m_cell.value = f"📌 کدرشته‌های قبولی: {major_name} (شامل {len(rows_in_major):,} کدرشته‌محل — مرتب‌شده بر اساس بالاترین امتیاز)"
+        m_cell.value = f"کدرشته‌های قبولی: {major_name}"
         m_cell.font = major_banners_font
         m_cell.fill = major_banners_fill
         m_cell.alignment = Alignment(horizontal='right', vertical='center', indent=1)
@@ -2004,13 +2030,13 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
                 ])
             row_data.append(r.get('منبع', '-'))
 
-            ws.append(row_data)
             ws.row_dimensions[current_row_idx].height = 22
             is_row_tahad = 'تعهدی' in str(r.get('دوره_تطبیقی', ''))
             fill = tahad_fill if is_row_tahad else (alt_fill if in_major_idx % 2 == 1 else None)
 
             for col_idx, val in enumerate(row_data, 1):
                 cell = ws.cell(row=current_row_idx, column=col_idx)
+                cell.value = val
                 h_name = headers[col_idx - 1]
 
                 is_bold = (h_name in ['اولویت در رشته', 'اولویت کل پیشنهادی', 'رتبه در سهمیه', 'امتیاز کل اولویت'])
@@ -2034,7 +2060,6 @@ def build_excel_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, 
             current_row_idx += 1
 
         # ردیف فاصله ظریف بین گروه‌های رشته
-        ws.append([])
         ws.row_dimensions[current_row_idx].height = 10
         current_row_idx += 1
 
@@ -2091,32 +2116,6 @@ def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title,
     meta_p1 = f"سهمیه: {reg_title}  |  رتبه در سهمیه: {rank:,}  |  بازه تحلیلی: {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})"
     meta_p2 = f"وضعیت تعهد خدمت: {tahad_status}  |  تعداد کدرشته‌های استخراج‌شده: {len(filtered):,} رشته‌محل  |  قالب گزارش: {format_label}"
 
-    meta_style = ParagraphStyle(
-        'MetaStyle',
-        fontName=PDF_FONT_NAME,
-        fontSize=7.5,
-        leading=10,
-        alignment=1,
-        textColor=colors.HexColor('#222222')
-    )
-    meta_table = Table(
-        [
-            [Paragraph(fa_text(meta_p1), meta_style)],
-            [Paragraph(fa_text(meta_p2), meta_style)]
-        ],
-        colWidths=[800]
-    )
-    meta_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F2F5F9')),
-        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#B0C4DE')),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-    ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 5))
-
     # تعریف استایل‌های سلول‌های جدول
     style_h = ParagraphStyle('Head', fontName=PDF_FONT_NAME, fontSize=7.5, leading=9.5, alignment=1, textColor=colors.white)
     style_cell_c = ParagraphStyle('CellC', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#111111'))
@@ -2125,17 +2124,17 @@ def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title,
 
     if include_scores:
         headers = [
-            'منبع و سال', 'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
+            'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
             'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان', 'رتبه در سهمیه',
             'دانشگاه قبولی', 'رشته قبولی', 'اولویت'
         ]
-        col_widths = [70, 35, 35, 35, 45, 45, 70, 60, 50, 50, 165, 110, 30]
+        col_widths = [38, 38, 38, 46, 50, 75, 65, 55, 55, 200, 110, 30]
     else:
         headers = [
-            'منبع و سال', 'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
+            'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
             'رتبه در سهمیه', 'دانشگاه قبولی', 'رشته قبولی', 'اولویت'
         ]
-        col_widths = [90, 55, 85, 70, 65, 65, 200, 135, 35]
+        col_widths = [65, 95, 85, 75, 75, 235, 135, 35]
 
     table_data = []
     # ردیف هدر
@@ -2152,7 +2151,6 @@ def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title,
 
         if include_scores:
             row = [
-                Paragraph(fa_text(str(r.get('منبع', '-'))[:35], wrap_width=16), style_cell_c),
                 Paragraph(fa_text(f"{float(r.get('ضریب_دوره', 1.0)):.2f}"), style_cell_c),
                 Paragraph(fa_text(f"{float(r.get('نمره_استان', 5.0)):.1f}"), style_cell_c),
                 Paragraph(fa_text(f"{float(r.get('نمره_رشته', 5.0)):.1f}"), style_cell_c),
@@ -2168,7 +2166,6 @@ def build_pdf_by_priority(filtered, rank, opt_p, pess_p, native_prov, reg_title,
             ]
         else:
             row = [
-                Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=22), style_cell_c),
                 Paragraph(fa_text(k_disp), style_cell_c),
                 Paragraph(fa_text(chance_text), style_cell_c),
                 Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
@@ -2261,32 +2258,6 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
     meta_p1 = f"سهمیه: {reg_title}  |  رتبه در سهمیه: {rank:,}  |  بازه تحلیلی: {opt_p}٪ خوش‌بینانه ({min_rank:,}) تا {pess_p}٪ بدبینانه ({max_rank:,})"
     meta_p2 = f"وضعیت تعهد خدمت: {tahad_status}  |  تعداد کدرشته‌های استخراج‌شده: {len(filtered):,} رشته‌محل  |  قالب گزارش: {format_label}"
 
-    meta_style = ParagraphStyle(
-        'MetaStyle2',
-        fontName=PDF_FONT_NAME,
-        fontSize=7.5,
-        leading=10,
-        alignment=1,
-        textColor=colors.HexColor('#222222')
-    )
-    meta_table = Table(
-        [
-            [Paragraph(fa_text(meta_p1), meta_style)],
-            [Paragraph(fa_text(meta_p2), meta_style)]
-        ],
-        colWidths=[800]
-    )
-    meta_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#F2F5F9')),
-        ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#B0C4DE')),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-    ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 5))
-
     style_h = ParagraphStyle('Head2', fontName=PDF_FONT_NAME, fontSize=7.5, leading=9.5, alignment=1, textColor=colors.white)
     style_banner = ParagraphStyle('Banner2', fontName=PDF_FONT_NAME, fontSize=8, leading=10, alignment=2, textColor=colors.white)
     style_cell_c = ParagraphStyle('CellC2', fontName=PDF_FONT_NAME, fontSize=7, leading=9, alignment=1, textColor=colors.HexColor('#111111'))
@@ -2295,17 +2266,17 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
 
     if include_scores:
         headers = [
-            'منبع و سال', 'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
+            'ضریب دوره', 'نمره شهر', 'نمره رشته', 'امتیاز کل',
             'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان', 'رتبه در سهمیه',
             'دانشگاه قبولی', 'رشته قبولی', 'اولویت کل', 'اولویت رشته'
         ]
-        col_widths = [65, 32, 32, 32, 42, 42, 65, 55, 45, 45, 155, 105, 42, 43]
+        col_widths = [36, 36, 36, 44, 48, 70, 65, 55, 55, 200, 115, 20, 20]
     else:
         headers = [
-            'منبع و سال', 'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
+            'رتبه کشوری', 'شانس قبولی', 'دوره تحصیلی', 'استان',
             'رتبه در سهمیه', 'دانشگاه قبولی', 'رشته قبولی', 'اولویت کل', 'اولویت رشته'
         ]
-        col_widths = [80, 50, 80, 65, 60, 60, 195, 130, 40, 40]
+        col_widths = [65, 95, 80, 70, 70, 230, 130, 30, 30]
 
     num_cols = len(headers)
     table_data = []
@@ -2343,7 +2314,7 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
         rows_in_major.sort(key=lambda x: (-x['امتیاز_کل'], -x['نمره_استان'], x['رتبه در سهمیه']))
 
         banner_row_idx = len(table_data)
-        banner_text = f"📌 کدرشته‌های قبولی: {major_name} (شامل {len(rows_in_major):,} کدرشته‌محل — مرتب‌شده بر اساس بالاترین امتیاز)"
+        banner_text = f"کدرشته‌های قبولی: {major_name}"
         banner_p = Paragraph(fa_text(banner_text), style_banner)
         table_data.append([banner_p] + [''] * (num_cols - 1))
         ts.append(('SPAN', (0, banner_row_idx), (-1, banner_row_idx)))
@@ -2361,7 +2332,6 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
 
             if include_scores:
                 row = [
-                    Paragraph(fa_text(str(r.get('منبع', '-'))[:35], wrap_width=16), style_cell_c),
                     Paragraph(fa_text(f"{float(r.get('ضریب_دوره', 1.0)):.2f}"), style_cell_c),
                     Paragraph(fa_text(f"{float(r.get('نمره_استان', 5.0)):.1f}"), style_cell_c),
                     Paragraph(fa_text(f"{float(r.get('نمره_رشته', 5.0)):.1f}"), style_cell_c),
@@ -2378,7 +2348,6 @@ def build_pdf_by_major(filtered, rank, opt_p, pess_p, native_prov, reg_title, se
                 ]
             else:
                 row = [
-                    Paragraph(fa_text(str(r.get('منبع', '-'))[:40], wrap_width=20), style_cell_c),
                     Paragraph(fa_text(k_disp), style_cell_c),
                     Paragraph(fa_text(chance_text), style_cell_c),
                     Paragraph(fa_text(str(r.get('دوره_تطبیقی', r.get('دوره', '-')))), style_cell_c),
@@ -2674,6 +2643,29 @@ def execute_search_and_send(chat_id):
         f"  2️⃣ **فایل ۲ (تفکیک رشته‌ها):** چیدمان موضوعی پشت‌سرهم (همه پرستاری‌ها پشت هم، همه پزشکی‌ها پشت هم و...) به همراه اولویت درون‌رشته‌ای"
     )
     bot.send_message(chat_id, summary_msg, parse_mode='Markdown')
+
+    # استخراج و ارسال خودکار فهرست متنی رشته‌های قبولی احتمالی داوطلب
+    unique_accepted_majors = []
+    seen_m = set()
+    for m in filtered['گروه_رشته']:
+        if m and m not in seen_m:
+            seen_m.add(m)
+            unique_accepted_majors.append(m)
+
+    if unique_accepted_majors:
+        majors_list_lines = []
+        for i, m in enumerate(unique_accepted_majors, 1):
+            majors_list_lines.append(f"  {i}️⃣ <b>{m}</b>")
+            
+        majors_list_text = (
+            f"🎓 <b>فهرست {len(unique_accepted_majors):,} رشته قبولی احتمالی شما در این بازه:</b>\n\n"
+            + "\n".join(majors_list_lines) +
+            f"\n\n📊 <i>تمامی کدرشته‌محل‌های فوق به تفکیک دانشگاه، دوره، شهر و رتبه در فایل‌های اکسل و PDF زیر درج شده‌اند.</i>"
+        )
+        try:
+            bot.send_message(chat_id, majors_list_text, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Error sending majors list text: {e}")
 
     # ارسال پیام راهنمای چک‌لیست تعهد خدمت در تلگرام
     if native_prov and native_prov != 'بدون تعهدی':
