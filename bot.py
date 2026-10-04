@@ -9,6 +9,8 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+import time
+import urllib.request
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import telebot
@@ -1618,25 +1620,67 @@ def callback_restart(call):
     )
 
 # =====================================================================
-# 🌐 وب‌سرور داخلی و پینگ Render (HealthCheck Server)
+# 🌐 وب‌سرور داخلی و پینگر خودکار Render (ضد خواب زمستانی ۲۴ ساعته)
 # =====================================================================
+HTML_STATUS_PAGE = """<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>ربات انتخاب رشته کنکور - وضعیت ۲۴ ساعته</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding-top: 60px; margin: 0; }
+        .card { background: #1e293b; max-width: 520px; margin: 0 auto; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; }
+        .status-badge { display: inline-block; background: #10b981; color: white; padding: 6px 16px; border-radius: 20px; font-weight: bold; margin-bottom: 20px; font-size: 14px; }
+        h1 { color: #38bdf8; font-size: 22px; margin-bottom: 12px; }
+        p { color: #94a3b8; font-size: 14px; line-height: 1.6; }
+        .tag { font-family: monospace; background: #334155; padding: 2px 6px; border-radius: 4px; color: #f1f5f9; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="status-badge">● ۲۴ ساعته آنلاین و فعال (Active 24/7)</div>
+        <h1>ربات تلگرام انتخاب رشته کنکور</h1>
+        <p>وب‌سرور پایدارساز و سیستم ضد خاموشی خودکار (<span class="tag">Keep-Alive</span>) با موفقیت در حال اجرا است.</p>
+        <p style="margin-top: 15px; font-size: 12px; color: #64748b;">Render Sleep Preventer & Health Monitor Active</p>
+    </div>
+</body>
+</html>"""
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
-        html = """<!DOCTYPE html>
-<html dir="rtl" lang="fa">
-<head><meta charset="utf-8"><title>وضعیت ربات کنکور</title></head>
-<body style="font-family: Tahoma, sans-serif; text-align: center; padding-top: 50px; background-color: #f8f9fa;">
-    <h1 style="color: #27ae60;">✅ ربات انتخاب رشته کنکور تجربی فعال است</h1>
-    <p style="color: #555;">سرویس تلگرام @Drhashemi1381Bot به صورت ۲۴ ساعته در حال کار است.</p>
-</body>
-</html>"""
-        self.wfile.write(html.encode('utf-8'))
+        self.wfile.write(HTML_STATUS_PAGE.strip().encode('utf-8'))
         
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+
     def log_message(self, format, *args):
         return
+
+def auto_pinger_loop():
+    """حلقه پینگ خودکار جهت جلوگیری از به خواب رفتن سرور رندر در پلان رایگان"""
+    time.sleep(25)  # فرصت برای بالا آمدن وب‌سرور
+    default_url = "https://konkur-bot-1.onrender.com"
+    while True:
+        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("APP_URL") or default_url
+        now_str = time.strftime("%H:%M:%S")
+        try:
+            if not url.startswith("http"):
+                url = "https://" + url
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (RenderKeepAlive/1.0)"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                if response.status == 200:
+                    print(f"💓 [Keep-Alive] پینگ خودکار موفق به {url} در {now_str} (سرور بیدار نگه‌داشته شد)")
+        except Exception as e:
+            print(f"⚠️ [Keep-Alive] وضعیت پینگ خودکار: {e}")
+        time.sleep(480)  # هر ۸ دقیقه یک‌بار پینگ می‌زند (قبل از مهلت ۱۵ دقیقه‌ای رندر)
 
 def run_bot_polling():
     print("🚀 پردازشگر تلگرام با سیستم رمز عبور، تفکیک سهمیه ۵ درصد و منابع جدید آماده اتصال شد...")
@@ -1648,18 +1692,20 @@ def run_bot_polling():
             print(f"⚠️ پیام سرور تلگرام: {err_str}")
             if "409" in err_str or "Conflict" in err_str:
                 print("⏳ تداخل موقت توکن با اتصال قبلی؛ ۱۰ ثانیه صبر برای آزادسازی نشست تلگرام...")
-                import time
                 time.sleep(10)
             else:
-                import time
                 time.sleep(10)
 
 if __name__ == '__main__':
     # 1. اجرای پولینگ تلگرام در ترد پس‌زمینه با قابلیت اتصال مجدد خودکار
     t_bot = threading.Thread(target=run_bot_polling, daemon=True)
     t_bot.start()
+
+    # 2. اجرای پینگر خودکار در پس‌زمینه برای بیدار نگه‌داشتن دائمی رندر (ضد خواب زمستانی)
+    t_pinger = threading.Thread(target=auto_pinger_loop, daemon=True)
+    t_pinger.start()
     
-    # 2. اجرای وب‌سرور روی ترد اصلی جهت باز بودن قطعی پورت شبکه برای رندر
+    # 3. اجرای وب‌سرور روی ترد اصلی جهت باز بودن قطعی پورت شبکه برای رندر
     port = int(os.environ.get('PORT', 10000))
     print(f"🌐 وب‌سرور رندر با موفقیت روی پورت {port} فعال شد.")
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
