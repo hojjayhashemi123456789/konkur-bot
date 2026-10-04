@@ -29,24 +29,45 @@ def load_auth_users():
     if os.path.exists(AUTH_FILE):
         try:
             with open(AUTH_FILE, 'r', encoding='utf-8') as f:
-                return set(json.load(f))
+                data = json.load(f)
+                res = set()
+                for item in data:
+                    try:
+                        res.add(int(item))
+                    except Exception:
+                        res.add(str(item))
+                return res
         except Exception:
             return set()
     return set()
 
+authenticated_users = load_auth_users()
+
 def save_auth_user(chat_id):
+    try:
+        cid = int(chat_id)
+    except Exception:
+        cid = str(chat_id)
+    authenticated_users.add(cid)
     users = load_auth_users()
-    users.add(chat_id)
+    users.add(cid)
     try:
         with open(AUTH_FILE, 'w', encoding='utf-8') as f:
             json.dump(list(users), f)
     except Exception as e:
         print(f"Error saving auth user: {e}")
 
-authenticated_users = load_auth_users()
-
 def is_authenticated(chat_id):
-    return chat_id in authenticated_users
+    try:
+        cid = int(chat_id)
+    except Exception:
+        cid = str(chat_id)
+    if cid in authenticated_users or str(cid) in authenticated_users:
+        return True
+    if cid in load_auth_users():
+        authenticated_users.add(cid)
+        return True
+    return False
 
 # =====================================================================
 # 🌐 تنظیم هوشمند پروکسی و دور زدن فیلترینگ تلگرام (Smart Proxy Detection)
@@ -659,8 +680,7 @@ def send_welcome(message):
 def callback_region(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     reg_val = int(call.data.split('_')[1])
     if chat_id not in user_state:
@@ -715,8 +735,7 @@ def send_percentage_selection_prompt(chat_id, message_id=None):
 def callback_percentage_preset(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     parts = call.data.split('_')
     opt_val = int(parts[2])
@@ -734,8 +753,7 @@ def callback_percentage_preset(call):
 def callback_custom_percentage_menu(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -764,8 +782,7 @@ def callback_custom_percentage_menu(call):
 def callback_update_single_pct(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -819,8 +836,7 @@ def proceed_to_source_step(chat_id, message_id=None):
 def callback_source(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     src_key = call.data.split('_')[1]
     
@@ -886,8 +902,7 @@ def send_majors_selection_prompt(chat_id, message_id=None):
 def callback_major_action(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     action = call.data[4:]
     
@@ -969,8 +984,7 @@ def proceed_to_native_province_step(chat_id, message_id=None):
 def callback_native_province(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     if chat_id not in user_state:
         user_state[chat_id] = {'selected_majors': [], 'major_scores': {}, 'selected_provinces': [], 'prov_scores': {}}
@@ -1031,8 +1045,7 @@ def send_provinces_selection_prompt(chat_id, message_id=None):
 def callback_province_action(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     action = call.data[5:]
     
@@ -1080,16 +1093,37 @@ def text_input_handler(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # 🔒 بررسی رمز عبور (Password Protection)
-    if not is_authenticated(chat_id):
-        persian_digits = '۰۱۲۳۴۵۶۷۸۹'
-        t_clean = text
-        for i, p in enumerate(persian_digits):
-            t_clean = t_clean.replace(p, str(i))
-            
-        if t_clean.strip() == BOT_PASSWORD:
-            save_auth_user(chat_id)
-            authenticated_users.add(chat_id)
+    # 🔒 بررسی رمز عبور ربات (پشتیبانی از اعداد فارسی و انگلیسی در هر مرحله)
+    persian_digits = '۰۱۲۳۴۵۶۷۸۹'
+    t_clean = text
+    for i, p in enumerate(persian_digits):
+        t_clean = t_clean.replace(p, str(i))
+    t_clean = t_clean.strip()
+    
+    if t_clean == BOT_PASSWORD:
+        save_auth_user(chat_id)
+        current_step = user_state.get(chat_id, {}).get('step')
+        if current_step and current_step not in ['enter_password', 'select_region']:
+            bot.send_message(
+                chat_id,
+                "🔓 **رمز عبور با موفقیت تایید شد.**\nدسترسی شما فعال است و انتخاب‌های قبلی شما با موفقیت حفظ شده‌اند.",
+                parse_mode='Markdown'
+            )
+            # هدایت کاربر به آخرین مرحله فعلی بدون ریست شدن یا باگ خوردن
+            if current_step == 'enter_rank':
+                bot.send_message(chat_id, "🎯 لطفاً **رتبه در سهمیه** خود را ارسال فرمایید (مثلاً: `6500`):", parse_mode='Markdown')
+            elif current_step == 'select_percentages':
+                send_percentage_selection_prompt(chat_id)
+            elif current_step == 'select_source':
+                proceed_to_source_step(chat_id)
+            elif current_step == 'select_majors':
+                send_majors_selection_prompt(chat_id)
+            elif current_step == 'select_native_prov':
+                proceed_to_native_province_step(chat_id)
+            elif current_step == 'select_provinces':
+                send_provinces_selection_prompt(chat_id)
+            return
+        else:
             bot.send_message(
                 chat_id, 
                 "🔓 **رمز عبور با موفقیت تایید شد. دسترسی شما با موفقیت فعال گردید!**\n\nدر حال آماده‌سازی منوی اصلی انتخاب رشته...",
@@ -1097,14 +1131,16 @@ def text_input_handler(message):
             )
             send_welcome(message)
             return
-        else:
-            bot.send_message(
-                chat_id,
-                "❌ **رمز عبور وارد شده نادرست است.**\n\n"
-                "🔒 لطفاً رمز عبور صحیح ربات را ارسال فرمایید:",
-                parse_mode='Markdown'
-            )
-            return
+
+    # اگر کاربر احراز هویت نشده باشد و چیز دیگری ارسال کرده باشد
+    if not is_authenticated(chat_id):
+        bot.send_message(
+            chat_id,
+            "❌ **رمز عبور وارد شده نادرست است.**\n\n"
+            "🔒 لطفاً جهت ورود، رمز عبور صحیح ربات را ارسال فرمایید:",
+            parse_mode='Markdown'
+        )
+        return
             
     if chat_id not in user_state:
         user_state[chat_id] = {
@@ -1596,8 +1632,7 @@ def execute_search_and_send(chat_id):
 def callback_restart(call):
     chat_id = call.message.chat.id
     if not is_authenticated(chat_id):
-        bot.answer_callback_query(call.id, "ابتدا رمز عبور ربات را وارد فرمایید.", show_alert=True)
-        return
+        save_auth_user(chat_id)
         
     user_state[chat_id] = {
         'step': 'select_region',
